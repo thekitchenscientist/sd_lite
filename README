@@ -44,7 +44,7 @@ torch.cuda.is_available()
 19) "pip install ftfy"
 20) "pip install gradio -q"
 
-21) Getting xformers to compile took over ten attempts and some serious debugging. This is what finally worked:
+21) Getting xformers to compile took over ten attempts and some serious debugging. Without it the model runs at 3.3 it/s rather than 4.6 it/s. This is what finally worked:
 "cd c:\sd_lite\scripts"
 "activate"
 "cd c:\sd_lite\"
@@ -89,7 +89,8 @@ You now have a ~6GB folder containing all the prequisites for Stable Diffusion 2
 23) Optional: Save the SD 2.1 model files locally (5.1 GB)
 "git lfs install"
 "git clone --branch fp16 https://huggingface.co/stabilityai/stable-diffusion-2-1-base"
-Download LFS model files seperately (unet, VAE, text encoder)
+Download LFS model files seperately (unet, VAE, text encoder) and put in the correct folders
+Move the entire folder from the C:\user\<user name> to where you actually want to keep it.
 
 24) Save the .ipynb from "https://github.com/qunash/stable-diffusion-2-gui" to c:\sd_lite
 25) Run cmd and paste in the following commands:
@@ -99,5 +100,6 @@ Download LFS model files seperately (unet, VAE, text encoder)
 "jupyter-lab"
 
 26) You can now browse for the notebook and run the app section (if you managed to build xformers set "mem_eff_attn_enabled = True" on line 11). It might take 5 minutes to load the models into VRAM.
+27) I'm using the 512x512 model so on line 13 the model_id = 'stabilityai/stable-diffusion-2-1-base' or the folder you created in step 23 e.g. model_id = 'C:/Models/stable-diffusion-2-1-base'
 27) Visit the link created by Gradio
 
