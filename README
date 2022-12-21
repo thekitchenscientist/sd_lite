@@ -101,5 +101,5 @@ Move the entire folder from the C:\user\<user name> to where you actually want t
 
 26) You can now browse for the notebook and run the app section (if you managed to build xformers set "mem_eff_attn_enabled = True" on line 11). It might take 5 minutes to load the models into VRAM.
 27) I'm using the 512x512 model so on line 13 the model_id = 'stabilityai/stable-diffusion-2-1-base' or the folder you created in step 23 e.g. model_id = 'C:/Models/stable-diffusion-2-1-base'
-27) Visit the link created by Gradio
+28) Visit the link created by Gradio and start prompting. The first run will be a bit slower, but once it's warmed up you will get the full speed available from your card.
 
