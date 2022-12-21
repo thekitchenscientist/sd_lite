@@ -4,12 +4,12 @@ I was given an old PC from 2015 equipped with an A10-7870K (3.9GHz, 4 threads) a
 
 These are the steps I took to get Stable diffusion 2.1 running at 4.6 it/s. Commands are quoted with "" and should be entered without the quotes.
 
-1)Reset Windows 10 to its orginal state. The processor is not supported by Windows 11 due to lack of a TPM 2.0.
+1) Reset Windows 10 to its orginal state. The processor is not supported by Windows 11 due to lack of a TPM 2.0.
 2) Install git (https://gitforwindows.org/)
-3) Run cmd (as admin) enter "git config --system core.longpaths true" (to avoid a later error message)
+3) Run cmd (as admin), enter "git config --system core.longpaths true" (to avoid a later error message)
 3) Install Visual Studio Community Edition with C++ tools (required to build xformers, https://visualstudio.microsoft.com/)
 4) Launch visual studio and Select Tools, Options. In the Options dialog, expand Projects and Solutions, select Build and Run. Set the maximum number of parallel project builds to 1 (to avoid a potential later error message).
-5) Install python 3.9 (xformers github says it supports python 3.7-3.9)
+5) Install python 3.9 (xformers github says it supports python 3.7-3.9, https://www.python.org/downloads/release/python-390/)
 6) In the final step of the installer choose the "enable long paths" option.
 7) Install CUDA 11.7 (xformers github says it doesn't support 12 yet, https://developer.nvidia.com/cuda-11-7-0-download-archive)
 8) Create the python virtual environment to hold all the dependancies for running Stable Diffusion. Run cmd enter "python -m venv c:\sd_lite" (keep the name short)
@@ -93,10 +93,11 @@ Download LFS model files seperately (unet, VAE, text encoder)
 
 24) Save the .ipynb from "https://github.com/qunash/stable-diffusion-2-gui" to c:\sd_lite
 25) Run cmd and paste in the following commands:
-"cd c:\sd_lite\scripts
-activate
-cd c:\sd_lite\
-jupyter-lab"
+"cd c:\sd_lite\scripts"
+"activate"
+"cd c:\sd_lite\"
+"jupyter-lab"
 
-26) You can now browse for the notebook and run the app section (if you managed to build xformers set "mem_eff_attn_enabled = True" on line 11).
+26) You can now browse for the notebook and run the app section (if you managed to build xformers set "mem_eff_attn_enabled = True" on line 11). It might take 5 minutes to load the models into VRAM.
+27) Visit the link created by Gradio
 
