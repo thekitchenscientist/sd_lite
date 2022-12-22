@@ -60,12 +60,12 @@ torch.cuda.is_available()
 - "python setup.py build" (could take 30+ minutes to complete)
 - "python setup.py bdist_wheel"
 
-get the .whl file and move it to c:\sd_lite
+- get the .whl file and move it to c:\sd_lite
 
-"cd ../"
+- "cd ../"
 22) "pip install 'xformers-0.0.15+ea1048b.d20221221-cp39-cp39-win_amd64.whl'" (yours will be named based on the system you are on)
 
-"python -m xformers.info" will tell you if it has been sucessful (the memory_efficient_attention will list as available):
+- "python -m xformers.info" will tell you if it has been sucessful (the memory_efficient_attention will list as available):
 
 A matching Triton is not available, some optimizations will not be enabled.
 Error caught was: No module named 'triton'
@@ -89,19 +89,19 @@ gpu.name:                                          NVIDIA GeForce RTX 2060
 You now have a ~6GB folder containing all the prequisites for Stable Diffusion 2.1
 
 23) Optional: Save the SD 2.1 model files locally (5.1 GB)
-"git lfs install"
-"git clone --branch fp16 https://huggingface.co/stabilityai/stable-diffusion-2-1-base"
-Download LFS model files seperately (unet, VAE, text encoder) and put in the correct folders
-Move the entire folder from the C:\user\<user name> to where you actually want to keep it.
+- "git lfs install"
+- "git clone --branch fp16 https://huggingface.co/stabilityai/stable-diffusion-2-1-base"
+- Download LFS model files seperately (unet, VAE, text encoder) and put in the correct folders
+- Move the entire folder from the C:\user\<user name> to where you actually want to keep it.
 
 24) Save the .ipynb from "https://github.com/qunash/stable-diffusion-2-gui" to c:\sd_lite
 25) Run cmd and paste in the following commands:
-"cd c:\sd_lite\scripts"
-"activate"
-"cd c:\sd_lite\"
-"jupyter-lab"
+- "cd c:\sd_lite\scripts"
+- "activate"
+- "cd c:\sd_lite\"
+- "jupyter-lab"
 
-26) You can now browse for the notebook and run the app section (if you managed to build xformers set "mem_eff_attn_enabled = True" on line 11). It might take 5 minutes to load the models into VRAM.
+26) You can now browse for the notebook and run the 'app section' (if you managed to build xformers set "mem_eff_attn_enabled = True" on line 11). It might take 5 minutes to load the models into VRAM.
 27) I'm using the 512x512 model so on line 13 the model_id = 'stabilityai/stable-diffusion-2-1-base' or the folder you created in step 23 e.g. model_id = 'C:/Models/stable-diffusion-2-1-base'
 28) Visit the link created by Gradio and start prompting. The first run will be a bit slower, but once it's warmed up you will get the full speed available from your card.
 
