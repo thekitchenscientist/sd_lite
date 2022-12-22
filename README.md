@@ -4,7 +4,7 @@ I was given an old PC from 2015 equipped with an A10-7870K (3.9GHz, 4 threads) a
 
 These are the steps I took to get Stable diffusion 2.1 running at 4.6 it/s. I was unable to get most of the pre-built community GUI to work due to the high RAM requirements. The only one that was close was NMKD on the low-VRAM mode but that had a 20 minute warm-up and took 52/s per image!
 
-Commands to enter into the wondows cmd tool are quoted with "" and should be entered without the quotes.
+Commands to enter into the windows cmd tool are quoted with "" and should be entered without the quotes.
 
 1) Reset Windows 10 to its orginal state. The processor is not supported by Windows 11 due to lack of a TPM 2.0.
 2) Install git (https://gitforwindows.org/)
@@ -47,18 +47,18 @@ torch.cuda.is_available()
 20) "pip install gradio -q"
 
 21) Getting xformers to compile took over ten attempts and some serious debugging. Without it the model runs at 3.3 it/s rather than 4.6 it/s. This is what finally worked:
-"cd c:\sd_lite\scripts"
-"activate"
-"cd c:\sd_lite\"
-"git clone https://github.com/facebookresearch/xformers.git"
-"cd xformers"
-"git submodule update --init --recursive"
-"set TORCH_CUDA_ARCH_LIST=7.5 (look up your card in the GeForce table to set the correct number, https://developer.nvidia.com/cuda-gpus)"
-"pip install ninja"
-"pip install wheel"
+- "cd c:\sd_lite\scripts"
+- "activate"
+- "cd c:\sd_lite\"
+- "git clone https://github.com/facebookresearch/xformers.git"
+- "cd xformers"
+- "git submodule update --init --recursive"
+- "set TORCH_CUDA_ARCH_LIST=7.5 (look up your card in the GeForce table to set the correct number, https://developer.nvidia.com/cuda-gpus)"
+- "pip install ninja"
+- "pip install wheel"
 
-"python setup.py build" (could take 30+ minutes to complete)
-"python setup.py bdist_wheel"
+- "python setup.py build" (could take 30+ minutes to complete)
+- "python setup.py bdist_wheel"
 
 get the .whl file and move it to c:\sd_lite
 
