@@ -1,8 +1,8 @@
-Setting up Stable Diffusion 2.1 with the minimum dependancies
+**Setting up Stable Diffusion 2.1 with the minimum dependancies**
 
 I was given an old PC from 2015 equipped with an A10-7870K (3.9GHz, 4 threads) and 8 GB RAM. The GA-F2A78M-HD2 motherboard is compatible with newer NVIDIA cards, so I added a second hand RTX 2060 (6GB VRAM) and upgraded the PSU to a 600W model.
 
-These are the steps I took to get Stable diffusion 2.1 running at 4.6 it/s. I was unable to get most of the pre-built community GUI to work due to the high RAM requirements. The only one that was close was NMKD on the low-VRAM mode but that took 52/s per image!
+These are the steps I took to get Stable diffusion 2.1 running at 4.6 it/s. I was unable to get most of the pre-built community GUI to work due to the high RAM requirements. The only one that was close was NMKD on the low-VRAM mode but that had a 20 minute warm-up and took 52/s per image!
 
 Commands to enter into the wondows cmd tool are quoted with "" and should be entered without the quotes.
 
