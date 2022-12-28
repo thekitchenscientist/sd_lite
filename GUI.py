@@ -24,7 +24,7 @@ with gr.Blocks(css=css) as sd_lite:
                 anti_prompt = gr.Textbox(label="Negative prompt", show_label=False, placeholder="What should the image avoid including?")
               #load_txt2img_model = gr.Button(value="Load Model")
               explore = gr.Button(value="Explore")
-              gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[2], height="auto")
+              gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
           
     inputs = [prompt, anti_prompt]
     outputs = [gallery]

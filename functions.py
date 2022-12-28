@@ -24,7 +24,7 @@ def load_txt2img_pipe():
 
         scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
         
-        print("Loading txt2img model into memory... This may take upto 5 minutes.")
+        print("Loading txt2img model into memory... This may take 5 minutes.")
         
         config.txt2img_pipe = StableDiffusionPipeline.from_pretrained(
               config.MODEL_ID,
@@ -46,15 +46,7 @@ def load_txt2img_pipe():
 if config.loaded_pipe == None:
     load_txt2img_pipe()
 
-def inference(prompt, neg_prompt=""):
-
-    n_images = config.IMAGE_COUNT
-    guidance = config.IMAGE_CFG
-    steps = config.IMAGE_STEPS
-    width= config.IMAGE_WIDTH
-    height= config.IMAGE_HEIGHT
-    seed= config.IMAGE_SEED
-
+def inference(prompt="", neg_prompt="", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_CFG, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED):
     if seed == 0:
         seed = random.randint(0, 2147483647)
 
@@ -62,30 +54,47 @@ def inference(prompt, neg_prompt=""):
     prompt = prompt
 
     try:
-        return txt_to_img(prompt, n_images, neg_prompt, guidance, steps, width, height, generator, seed)
+        return text_to_image(prompt, neg_prompt, n_images,  guidance, steps, width, height, generator, seed)
 
     except:
         return None
 
-def txt_to_img(prompt, n_images, neg_prompt, guidance, steps, width, height, generator, seed):
+def text_to_image(prompt, neg_prompt, n_images,  guidance, steps, width, height, generator, seed):
 
     output_name = str(uuid.uuid4())
+    result = []
     
-    result = config.txt2img_pipe(
-      prompt,
-      num_images_per_prompt = n_images,
-      negative_prompt = neg_prompt,
-      num_inference_steps = int(steps),
-      guidance_scale = guidance,
-      width = width,
-      height = height,
-      generator = generator).images
+    for settings in range(-1,2):
+
+        temp_steps = steps + 1 * settings * config.IMAGE_STEPS_OFFSET
+        temp_guidance = guidance - 1 * settings * config.IMAGE_CFG_OFFSET
+        
+        if settings == -1:
+            temp_prompt = prompt + " " + output_name
+        else:
+            temp_prompt = prompt
+
+        temp_result = config.txt2img_pipe(
+          temp_prompt,
+          num_images_per_prompt = n_images,
+          negative_prompt = neg_prompt,
+          num_inference_steps = int(temp_steps),
+          guidance_scale = temp_guidance,
+          width = width,
+          height = height,
+          generator = generator).images
+
+        result.append(temp_result[0])
+        #print(settings, result)
 
     try:
         for i, image in enumerate(result):
             #print(i, image)
             image.save( config.IMAGE_OUTPUT+'/'+output_name+'_'+str(i)+'.'+config.IMAGE_FORMAT, config.IMAGE_FORMAT)
+            #result[i] = image.resize((256,256), Image.LANCZOS)
     except:
-        image.save( str(i)+'.png', 'PNG')
+        print( "Error saving image" +output_name+'_'+str(i)+'.png')
+        
+    #resize images
 
     return result
