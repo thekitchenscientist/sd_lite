@@ -7,26 +7,44 @@ import uuid
 import sqlite3
 import os
 
+def generate_session_UUID():
+    config.session_UUID = str(uuid.uuid4())
+    #save the config data to history.db
+    
+if config.session_UUID == None:
+    generate_session_UUID()
+
+
 if not os.path.isdir(config.IMAGE_OUTPUT):
     os.mkdir(config.IMAGE_OUTPUT)
 
-#def load_txt2img_pipe():
+def load_txt2img_pipe():
 
-scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
+    if config.loaded_pipe != 'txt2img':
 
-pipe = StableDiffusionPipeline.from_pretrained(
-      config.MODEL_ID,
-      revision="fp16" if torch.cuda.is_available() else "fp32",
-      torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-      scheduler=scheduler
-    ).to("cuda")
+        scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
+        
+        print("Loading txt2img model into memory... This may take upto 5 minutes.")
+        
+        config.txt2img_pipe = StableDiffusionPipeline.from_pretrained(
+              config.MODEL_ID,
+              revision="fp16" if config.HALF_PRECISION else "fp32",
+              torch_dtype=torch.float16 if config.HALF_PRECISION else torch.float32,
+              scheduler=scheduler
+            ).to("cuda")
 
-if config.SPLIT_ATTENTION:
-    pipe.enable_attention_slicing()
-if config.MEMORY_EFFICIENT_ATTENTION:
-    pipe.enable_xformers_memory_efficient_attention()
+        config.loaded_pipe = 'txt2img'
+        
 
+        if config.SPLIT_ATTENTION:
+            config.txt2img_pipe.enable_attention_slicing()
+        if config.MEMORY_EFFICIENT_ATTENTION:
+            config.txt2img_pipe.enable_xformers_memory_efficient_attention()
+            
+        print("txt2img model loaded!")
 
+if config.loaded_pipe == None:
+    load_txt2img_pipe()
 
 def inference(prompt, neg_prompt=""):
 
@@ -53,7 +71,7 @@ def txt_to_img(prompt, n_images, neg_prompt, guidance, steps, width, height, gen
 
     output_name = str(uuid.uuid4())
     
-    result = pipe(
+    result = config.txt2img_pipe(
       prompt,
       num_images_per_prompt = n_images,
       negative_prompt = neg_prompt,
@@ -66,7 +84,7 @@ def txt_to_img(prompt, n_images, neg_prompt, guidance, steps, width, height, gen
     try:
         for i, image in enumerate(result):
             #print(i, image)
-            image.save( config.IMAGE_OUTPUT+'/'+output_name+'_'+str(i)+config.IMAGE_FORMAT, 'PNG')
+            image.save( config.IMAGE_OUTPUT+'/'+output_name+'_'+str(i)+'.'+config.IMAGE_FORMAT, config.IMAGE_FORMAT)
     except:
         image.save( str(i)+'.png', 'PNG')
 

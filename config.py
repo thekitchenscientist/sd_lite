@@ -4,7 +4,7 @@ HALF_PRECISION = True
 MODEL_ID = 'C:/Models/stable-diffusion-2-1-base' #'stabilityai/stable-diffusion-2-1-base'
 IMAGE_INPUT = 'C:/sd_lite/inputs'
 IMAGE_OUTPUT = 'C:/sd_lite/outputs' 
-IMAGE_FORMAT = '.PNG' # '.JPG' IMAGE_SAMPLER = ''
+IMAGE_FORMAT = 'PNG' # 'JPG' IMAGE_SAMPLER = ''
 IMAGE_WIDTH = 512
 IMAGE_HEIGHT = 512
 IMAGE_SEED = 1000000007
@@ -17,3 +17,5 @@ IMAGE_STRENGTH = 0.45
 IMAGE_STRENGTH_OFFSET = 0.15
 app_status = None
 loaded_pipe = None
+txt2img_pipe = None
+session_UUID = None
