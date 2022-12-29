@@ -6,8 +6,11 @@ Having analysed over 2 million stable diffusion prompts, it is clear humans are 
 
 The guiding principal of this project is to be able to run Stable Diffusion with minimalism. This means:
 
+* taking steps to minimise harmful outputs and combatting the model bias
 * as few options as possible (abstract away CFG, steps, sampler, height, width, model and prompt refining, etc)
-* as few dependencies as possible (currently 8 if you want to use a GUI)
-* on systems with 7 year old processors, only 8GB RAM and 6GB VRAM (making it work with just 3G VRAM is something I'll let others try).
+* as few dependencies as possible (currently 8 if you want to use a Graphical User Interface)
+* on systems with 7+ year old processors, only 8GB RAM and 6GB VRAM (making it work with just 3G VRAM is something I'll let others try).
 
 The recommendation at the end of 2022 from StabilityAI is to use xformers for a 25-40 % boost in diffusion speed. This requires Microsoft Visual Studio, Nvidia CUDA, git, ninja & wheel in order to build the .whl file compatible with your system. The payback on the additional 11GB hard drive space and 2 hours setup comes after generating about 3000 images.
+
+[https://github.com/thekitchenscientist/sd_lite/wiki/Installation! Minimal installation instructions] are available in the project wiki, along with a detailed roadmap and guiding prinicples.
