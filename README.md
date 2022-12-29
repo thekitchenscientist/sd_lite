@@ -13,4 +13,4 @@ The guiding principal of this project is to be able to run Stable Diffusion with
 
 The recommendation at the end of 2022 from StabilityAI is to use xformers for a 25-40 % boost in diffusion speed. This requires Microsoft Visual Studio, Nvidia CUDA, git, ninja & wheel in order to build the .whl file compatible with your system. The payback on the additional 11GB hard drive space and 2 hours setup comes after generating about 3000 images.
 
-[https://github.com/thekitchenscientist/sd_lite/wiki/Installation! Minimal installation instructions] are available in the project wiki, along with a detailed roadmap and guiding prinicples.
+[Minimal installation instructions](https://github.com/thekitchenscientist/sd_lite/wiki/Installation) are available in the project wiki, along with a detailed roadmap and guiding prinicples.
