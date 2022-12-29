@@ -1,4 +1,4 @@
-**Latent Explorer**
+**Latent Exploration**
 
 Have you considered the vastness of latent space in large diffusion models? openCLIP which encodes the text in Stable Diffusion 2.1 has a vocabulary of 49409 tokens and knowledge of 2 billion concepts. Each basic 75 token prompt can be paired with one of 2.1 billion seeds. Generating 100 images per second it would still take 8 months try each seed once.
 
@@ -13,4 +13,4 @@ The guiding principal of this project is to be able to run Stable Diffusion with
 
 The recommendation at the end of 2022 from StabilityAI is to use xformers for a 25-40 % boost in diffusion speed. This requires Microsoft Visual Studio, Nvidia CUDA, git, ninja & wheel in order to build the .whl file compatible with your system. The payback on the additional 11GB hard drive space and 2 hours setup comes after generating about 3000 images.
 
-[Minimal installation instructions](https://github.com/thekitchenscientist/sd_lite/wiki/Installation) are available in the project wiki, along with a detailed roadmap and guiding prinicples.
+[Installation instructions](https://github.com/thekitchenscientist/sd_lite/wiki/Installation) are available in the project wiki, along with a detailed roadmap and guiding prinicples.
