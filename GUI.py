@@ -11,26 +11,22 @@ with gr.Blocks(css=css) as sd_lite:
           <div class="main-div">
             <div>
               <h1>Stable Diffusion 2.1</h1>
+                <p>Press enter after typing in either text box to start the image generation process.</p>
             </div><br>
           </div>
         """
     )
-    with gr.Row():
-        
-        with gr.Column(scale=70):
-          with gr.Group():
-              with gr.Row():
-                prompt = gr.Textbox(label="Prompt", show_label=False,placeholder=f"What do you want to see?")
-                anti_prompt = gr.Textbox(label="Negative prompt", show_label=False, placeholder="What should the image avoid including?")
-              #load_txt2img_model = gr.Button(value="Load Model")
-              explore = gr.Button(value="Explore")
-              gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
+    with gr.Column():
+        with gr.Row():
+            prompt = gr.Textbox(label="Prompt", show_label=False,placeholder=f"What do you want to see?")
+            anti_prompt = gr.Textbox(label="Negative prompt", show_label=False, placeholder="What should the image avoid including?")
+        gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
           
     inputs = [prompt, anti_prompt]
     outputs = [gallery]
     prompt.submit(functions.inference, inputs=inputs, outputs=outputs)
-    explore.click(functions.inference, inputs=inputs, outputs=outputs)
-    #load_txt2img_model.click(functions.load_txt2img_pipe)
+    anti_prompt.submit(functions.inference, inputs=inputs, outputs=outputs)
+
 
 sd_lite.queue()
-sd_lite.launch(debug=True) #, share=True)
+sd_lite.launch(debug=True)

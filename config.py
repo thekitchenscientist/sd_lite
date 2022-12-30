@@ -2,6 +2,7 @@ SPLIT_ATTENTION= True
 MEMORY_EFFICIENT_ATTENTION = True
 HALF_PRECISION = True
 MODEL_ID = 'C:/Models/stable-diffusion-2-1-base' #'stabilityai/stable-diffusion-2-1-base'
+PROMPT_FOLDER = 'C:/Users/stabl/Source/Repos/sd_lite/prompts'
 IMAGE_INPUT = 'C:/sd_lite/inputs'
 IMAGE_OUTPUT = 'C:/sd_lite/outputs' 
 IMAGE_FORMAT = 'PNG' # 'JPG' IMAGE_SAMPLER = ''

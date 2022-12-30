@@ -7,6 +7,21 @@ import uuid
 import sqlite3
 import os
 
+ROOT_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__)))
+
+loaded_pipe = config.loaded_pipe
+
+if not os.path.isdir(config.IMAGE_INPUT):
+    os.mkdir(config.IMAGE_INPUT)
+
+if not os.path.isdir(config.IMAGE_OUTPUT):
+    os.mkdir(config.IMAGE_OUTPUT)
+    
+if not os.path.isdir(config.PROMPT_FOLDER):
+    os.mkdir(config.PROMPT_FOLDER)
+
+
+
 def generate_session_UUID():
     config.session_UUID = str(uuid.uuid4())
     #save the config data to history.db
@@ -15,12 +30,10 @@ if config.session_UUID == None:
     generate_session_UUID()
 
 
-if not os.path.isdir(config.IMAGE_OUTPUT):
-    os.mkdir(config.IMAGE_OUTPUT)
 
-def load_txt2img_pipe():
+def load_txt2img_pipe(loaded_pipe):
 
-    if config.loaded_pipe != 'txt2img':
+    if loaded_pipe != 'txt2img':
 
         scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
         
@@ -33,7 +46,7 @@ def load_txt2img_pipe():
               scheduler=scheduler
             ).to("cuda")
 
-        config.loaded_pipe = 'txt2img'
+        loaded_pipe = 'txt2img'
         
 
         if config.SPLIT_ATTENTION:
@@ -43,10 +56,10 @@ def load_txt2img_pipe():
             
         print("txt2img model loaded!")
 
-if config.loaded_pipe == None:
-    load_txt2img_pipe()
+if loaded_pipe == None:
+    load_txt2img_pipe(loaded_pipe)
 
-def inference(prompt="", neg_prompt="", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_CFG, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED):
+def inference(prompt="", anti_prompt="", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_CFG, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED):
     if seed == 0:
         seed = random.randint(0, 2147483647)
 
@@ -54,12 +67,12 @@ def inference(prompt="", neg_prompt="", n_images = config.IMAGE_COUNT, guidance 
     prompt = prompt
 
     try:
-        return text_to_image(prompt, neg_prompt, n_images,  guidance, steps, width, height, generator, seed)
+        return text_to_image(prompt, anti_prompt, n_images,  guidance, steps, width, height, generator, seed)
 
     except:
         return None
 
-def text_to_image(prompt, neg_prompt, n_images,  guidance, steps, width, height, generator, seed):
+def text_to_image(prompt, anti_prompt, n_images,  guidance, steps, width, height, generator, seed):
 
     output_name = str(uuid.uuid4())
     result = []
@@ -77,7 +90,7 @@ def text_to_image(prompt, neg_prompt, n_images,  guidance, steps, width, height,
         temp_result = config.txt2img_pipe(
           temp_prompt,
           num_images_per_prompt = n_images,
-          negative_prompt = neg_prompt,
+          negative_prompt = anti_prompt,
           num_inference_steps = int(temp_steps),
           guidance_scale = temp_guidance,
           width = width,
