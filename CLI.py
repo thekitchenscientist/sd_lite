@@ -12,6 +12,11 @@ def main(args):
 	if args.config is not None:	
 		if os.path.exists(functions.ROOT_DIR+"/prompts/"+args.config+".py"):
 			from prompts import config as config
+			functions.SESSION_ID = functions.get_config_hash(functions.ROOT_DIR+"/prompts/"+args.config+".py")
+			functions.CONFIG_LIST = (functions.SESSION_ID,config.SPLIT_ATTENTION,config.MEMORY_EFFICIENT_ATTENTION,config.HALF_PRECISION,config.MODEL_ID,config.IMAGE_INPUT_FOLDER,config.IMAGE_OUTPUT_FOLDER,config.IMAGE_FORMAT,config.IMAGE_SCHEDULER,
+                   config.IMAGE_WIDTH,config.IMAGE_HEIGHT,config.IMAGE_SEED,config.IMAGE_SCALE,config.IMAGE_STEPS,config.IMAGE_SCALE_OFFSET,config.IMAGE_STEPS_OFFSET,config.IMAGE_COUNT,config.IMAGE_STRENGTH,config.IMAGE_STRENGTH_OFFSET,
+                   config.IMAGE_BRACKETING,config.SAVE_METADATA_TO_IMAGE)
+			functions.check_config_hash_exists(functions.SESSION_ID, functions.CONFIG_LIST)
 	else:
 		import config as config
 
@@ -37,7 +42,7 @@ def main(args):
 
 		print(prompt,anti_prompt)
 
-		functions.inference(prompt=prompt, anti_prompt=anti_prompt, n_images = config.IMAGE_COUNT, guidance = config.IMAGE_CFG, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED)
+		functions.inference(prompt=prompt, anti_prompt=anti_prompt, n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED)
 
 
 #parse supplied data

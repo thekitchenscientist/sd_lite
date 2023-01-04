@@ -18,6 +18,7 @@ BUFFER_SIZE = 65536
 ROOT_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__)))
 
 
+
 if config.IMAGE_INPUT_FOLDER is not None:
     if not os.path.isdir(config.IMAGE_INPUT_FOLDER):
         os.mkdir(config.IMAGE_INPUT_FOLDER)
@@ -41,7 +42,7 @@ if not os.path.isdir(ROOT_DIR+"/prompts"):
 
 
 # assign unique ID's to each configuration chosen
-def check_config_hash(filepath):
+def get_config_hash(filepath):
 
     md5 = hashlib.md5()
     with open(filepath,'rb') as config_file:
@@ -53,19 +54,22 @@ def check_config_hash(filepath):
 
     return md5.hexdigest()
 
+SESSION_ID = get_config_hash(ROOT_DIR+"/config.py")
+
+CONFIG_LIST = (SESSION_ID,config.SPLIT_ATTENTION,config.MEMORY_EFFICIENT_ATTENTION,config.HALF_PRECISION,config.MODEL_ID,config.IMAGE_INPUT_FOLDER,config.IMAGE_OUTPUT_FOLDER,config.IMAGE_FORMAT,config.IMAGE_SCHEDULER,
+                   config.IMAGE_WIDTH,config.IMAGE_HEIGHT,config.IMAGE_SEED,config.IMAGE_SCALE,config.IMAGE_STEPS,config.IMAGE_SCALE_OFFSET,config.IMAGE_STEPS_OFFSET,config.IMAGE_COUNT,config.IMAGE_STRENGTH,config.IMAGE_STRENGTH_OFFSET,
+                   config.IMAGE_BRACKETING,config.SAVE_METADATA_TO_IMAGE)
 
 def create_connection(db_file):
     """ create a database connection to a SQLite database """
     conn = None
     try:
         conn = sqlite3.connect(db_file)
-        print(sqlite3.version)
+        #print(sqlite3.version)
     except Error as e:
         print(e)
 
     return conn
-
-#print(create_connection(ROOT_DIR+"/history.db"))
 
 def create_table(conn, create_table_sql):
     """ create a table from the create_table_sql statement
@@ -78,7 +82,6 @@ def create_table(conn, create_table_sql):
         c.execute(create_table_sql)
     except Error as e:
         print(e)
-
 
 def create_history_database():
     database = ROOT_DIR+"/history.db"
@@ -96,28 +99,26 @@ def create_history_database():
                                         IMAGE_WIDTH integer NOT NULL,
                                         IMAGE_HEIGHT integer NOT NULL,
                                         IMAGE_SEED integer NOT NULL,
-                                        IMAGE_CFG real NOT NULL,
+                                        IMAGE_SCALE real NOT NULL,
                                         IMAGE_STEPS integer NOT NULL,
-                                        IMAGE_CFG_OFFSET real NOT NULL,
+                                        IMAGE_SCALE_OFFSET real NOT NULL,
                                         IMAGE_STEPS_OFFSET integer NOT NULL,
                                         IMAGE_COUNT integer NOT NULL,
                                         IMAGE_STRENGTH real NOT NULL,
                                         IMAGE_STRENGTH_OFFSET real NOT NULL,
                                         IMAGE_BRACKETING integer NOT NULL,
-                                        SAVE_METADATA_TO_IMAGE integer NOT NULL,
-                                        app_status text,
-                                        loaded_pipe text,
-                                        txt2img_pipe text
+                                        SAVE_METADATA_TO_IMAGE integer NOT NULL
                                     ); """
 
     sql_create_prompt_table = """CREATE TABLE IF NOT EXISTS prompts (
                                     id integer PRIMARY KEY,
+                                    config_hash text NOT NULL,
                                     UUID text NOT NULL,
                                     scheduler text NOT NULL,
                                     prompt text,
                                     anti_prompt text,
                                     steps  integer NOT NULL,
-                                    CFG real NOT NULL,
+                                    scale real NOT NULL,
                                     seed integer NOT NULL,
                                     n_images integer NOT NULL,
                                     date_time text NOT NULL,
@@ -136,9 +137,98 @@ def create_history_database():
     else:
         print("Error! cannot create the database connection.")
 
-#check if history.db exists if not dreate tables
-#check_config_hash(ROOT_DIR+"/config.py")
-#if it exists check if hash of config is alreay recorded, if not record it
+
+def add_config_hash(conn, config_list):
+    """
+    Create a entry in the config table
+    :param conn:
+    :param CONFIG_LIST:
+    :return: row id
+    """
+    sql = ''' INSERT INTO config(hash, 
+                                        SPLIT_ATTENTION,
+                                        MEMORY_EFFICIENT_ATTENTION,
+                                        HALF_PRECISION,
+                                        MODEL_ID,
+                                        IMAGE_INPUT_FOLDER,
+                                        IMAGE_OUTPUT_FOLDER,
+                                        IMAGE_FORMAT,
+                                        IMAGE_SCHEDULER,
+                                        IMAGE_WIDTH,
+                                        IMAGE_HEIGHT,
+                                        IMAGE_SEED,
+                                        IMAGE_SCALE,
+                                        IMAGE_STEPS,
+                                        IMAGE_SCALE_OFFSET,
+                                        IMAGE_STEPS_OFFSET,
+                                        IMAGE_COUNT,
+                                        IMAGE_STRENGTH,
+                                        IMAGE_STRENGTH_OFFSET,
+                                        IMAGE_BRACKETING,
+                                        SAVE_METADATA_TO_IMAGE)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '''
+    cur = conn.cursor()
+    cur.execute(sql, config_list)
+    conn.commit()
+    return cur.lastrowid
+
+def add_prompt_metadata(conn, output_name, file_metadata):
+    """
+    Create a entry in the config table
+    :param conn:
+    :param output_name:
+    :param file_metadata:
+    :return: None
+    """
+    time_stamp = 'today'
+    for i in range(0,len(file_metadata)):
+        prompt_metadata_list = (SESSION_ID, output_name+'_'+str(i)+'.'+config.IMAGE_FORMAT, file_metadata[i]["scheduler"],file_metadata[i]["prompt"],file_metadata[i]["negative_prompt"],file_metadata[i]["steps"],file_metadata[i]["scale"],file_metadata[i]["seed"],file_metadata[i]["n_images"], time_stamp)
+     
+        sql = ''' INSERT INTO prompts(config_hash,
+                                        UUID,
+                                        scheduler,
+                                        prompt,
+                                        anti_prompt,
+                                        steps,
+                                        scale,
+                                        seed,
+                                        n_images,
+                                        date_time)
+                  VALUES(?,?,?,?,?,?,?,?,?,?) '''
+        cur = conn.cursor()
+        cur.execute(sql, prompt_metadata_list)
+    conn.commit()
+
+
+def lookup_config_hash(conn, config_hash):
+    """
+    Query tasks by priority
+    :param conn: the Connection object
+    :param priority:
+    :return:
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM config WHERE hash=?", (config_hash,))
+
+    rows = cur.fetchall()
+
+    return rows
+
+#check if history.db exists if not create tables
+if not os.path.exists(ROOT_DIR+"/history.db"):
+    create_history_database()
+
+#if it exists check if hash of config is already recorded, if not record it
+def check_config_hash_exists(config_hash, config_list):
+    if os.path.exists(ROOT_DIR+"/history.db"):
+        conn = create_connection(ROOT_DIR+"/history.db")
+        config_check = lookup_config_hash(conn, config_hash)
+
+        if len(config_check) == 0:
+            add_config_hash(conn,config_list)
+            print("Added new config with hash",config_hash)
+
+check_config_hash_exists(SESSION_ID, CONFIG_LIST)
 
 def load_txt2img_pipe(loaded_pipe):
 
@@ -171,7 +261,7 @@ def load_txt2img_pipe(loaded_pipe):
 if loaded_pipe == None:
     load_txt2img_pipe(loaded_pipe)
 
-def inference(prompt="", anti_prompt="", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_CFG, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED):
+def inference(prompt="", anti_prompt="", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED):
     if seed == 0:
         seed = random.randint(0, 2147483647)
 
@@ -196,11 +286,11 @@ def text_to_image(prompt, anti_prompt, n_images,  guidance, steps, width, height
             continue
 
         # setup image properties
-        temp_guidance = guidance + config.IMAGE_CFG_OFFSET * settings
+        temp_guidance = guidance + config.IMAGE_SCALE_OFFSET * settings
         temp_steps = steps + config.IMAGE_STEPS_OFFSET * settings
         
         if settings == -1:
-            temp_prompt = prompt + " " + output_name
+            temp_prompt = output_name + ". " + prompt
         else:
             temp_prompt = prompt
 
@@ -220,9 +310,9 @@ def text_to_image(prompt, anti_prompt, n_images,  guidance, steps, width, height
         temp_dict = {}
         temp_dict["scheduler"] = config.IMAGE_SCHEDULER
         temp_dict["prompt"] = temp_prompt
-        temp_dict["anti_prompt"] = anti_prompt
+        temp_dict["negative_prompt"] = anti_prompt
         temp_dict["steps"] = str(temp_steps)
-        temp_dict["CFG"] = str(temp_guidance)
+        temp_dict["scale"] = str(temp_guidance)
         temp_dict["seed"] = str(seed)
         temp_dict["n_images"] = str(n_images)
 
@@ -231,7 +321,14 @@ def text_to_image(prompt, anti_prompt, n_images,  guidance, steps, width, height
         if n_images > 1:
             for k in range(1,n_images):
                 file_metadata.append(copy.deepcopy(temp_dict))
-                file_metadata[k+1]["seed"] = str(seed+k)
+                file_metadata[-1]["seed"] = str(int(file_metadata[-1]["seed"])+k)
+
+    # save images to database
+    try:
+        conn = create_connection(ROOT_DIR+"/history.db")
+        add_prompt_metadata(conn, output_name, file_metadata)
+    except:
+        print( "Error saving image metadata to history.db")
 
     # save image to folder
     try:
@@ -241,7 +338,7 @@ def text_to_image(prompt, anti_prompt, n_images,  guidance, steps, width, height
                 for key, value in file_metadata[i].items():
                     if isinstance(key, str) and isinstance(value, str):
                         metadata.add_text(key, value)
-                        print(key, value)
+                        #print(key, value)
 
             image.save( IMAGE_OUTPUT_FOLDER+'/'+output_name+'_'+str(i)+'.'+config.IMAGE_FORMAT, config.IMAGE_FORMAT, pnginfo=(metadata if config.SAVE_METADATA_TO_IMAGE and config.IMAGE_FORMAT == "PNG" else None))
     except:
