@@ -21,3 +21,5 @@ SAVE_METADATA_TO_IMAGE = True
 app_status = None
 loaded_pipe = None
 txt2img_pipe = None
+img2img_pipe = None
+depth2img_pipe = None

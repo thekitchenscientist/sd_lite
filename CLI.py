@@ -33,16 +33,16 @@ def main(args):
 
 	#parse prompt_list
 	for prompt_parts in prompt_list:
-		prompt = ""
-		anti_prompt = ""
+		explore_prompt = ""
+		explore_anti_prompt = ""
 		prompt_text = prompt_parts.split("|")
-		prompt = prompt_text[0]
+		explore_prompt = prompt_text[0]
 		if len(prompt_text) > 1:
-			anti_prompt = prompt_text[-1]
+			explore_anti_prompt = prompt_text[-1]
 
-		print(prompt,anti_prompt)
+		print(explore_prompt,explore_anti_prompt)
 
-		functions.inference(prompt=prompt, anti_prompt=anti_prompt, n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED)
+		functions.txt2img_inference(explore_prompt=prompt, explore_anti_prompt=anti_prompt, n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED)
 
 
 #parse supplied data

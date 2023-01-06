@@ -24,4 +24,12 @@ for path in filepaths:
         continue
     img = Image.open(path).convert('RGB')
     img.load()  # Needed only for .png EXIF data (see citation above)
-    print(img.info['prompt'])
+    try:
+        prompt = img.info['prompt']
+        anti_prompt = img.info['anti_prompt']
+        if len(anti_prompt) == 0:
+            print(prompt)
+        else:
+            print(prompt+'|'+anti_prompt)
+    except:
+        None

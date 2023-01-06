@@ -1,4 +1,4 @@
-﻿from diffusers import StableDiffusionPipeline, DiffusionPipeline, EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler
+﻿from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline, DiffusionPipeline, EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler
 import torch
 from PIL import PngImagePlugin, Image
 import random
@@ -119,6 +119,7 @@ def create_history_database():
                                     anti_prompt text,
                                     steps  integer NOT NULL,
                                     scale real NOT NULL,
+                                    strength real,
                                     seed integer NOT NULL,
                                     n_images integer NOT NULL,
                                     date_time text NOT NULL,
@@ -182,7 +183,7 @@ def add_prompt_metadata(conn, output_name, file_metadata):
     """
     time_stamp = 'today'
     for i in range(0,len(file_metadata)):
-        prompt_metadata_list = (SESSION_ID, output_name+'_'+str(i)+'.'+config.IMAGE_FORMAT, file_metadata[i]["scheduler"],file_metadata[i]["prompt"],file_metadata[i]["negative_prompt"],file_metadata[i]["steps"],file_metadata[i]["scale"],file_metadata[i]["seed"],file_metadata[i]["n_images"], time_stamp)
+        prompt_metadata_list = (SESSION_ID, output_name+'_'+str(i)+'.'+config.IMAGE_FORMAT, file_metadata[i]["scheduler"],file_metadata[i]["prompt"],file_metadata[i]["negative_prompt"],file_metadata[i]["steps"],file_metadata[i]["scale"],file_metadata[i]["strength"],file_metadata[i]["seed"],file_metadata[i]["n_images"], time_stamp)
      
         sql = ''' INSERT INTO prompts(config_hash,
                                         UUID,
@@ -191,10 +192,11 @@ def add_prompt_metadata(conn, output_name, file_metadata):
                                         anti_prompt,
                                         steps,
                                         scale,
+                                        strength,
                                         seed,
                                         n_images,
                                         date_time)
-                  VALUES(?,?,?,?,?,?,?,?,?,?) '''
+                  VALUES(?,?,?,?,?,?,?,?,?,?,?) '''
         cur = conn.cursor()
         cur.execute(sql, prompt_metadata_list)
     conn.commit()
@@ -230,55 +232,136 @@ def check_config_hash_exists(config_hash, config_list):
 
 check_config_hash_exists(SESSION_ID, CONFIG_LIST)
 
-def load_txt2img_pipe(loaded_pipe):
+if config.IMAGE_SCHEDULER == 'EulerAncestralDiscrete':
+    scheduler = EulerAncestralDiscreteScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
+else:
+    scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler") 
 
-    if loaded_pipe != 'txt2img':
+def set_mem_optimizations(pipe):
+        if config.SPLIT_ATTENTION:
+            pipe.enable_attention_slicing()
+        if config.MEMORY_EFFICIENT_ATTENTION:
+            pipe.enable_xformers_memory_efficient_attention()
 
-        if config.IMAGE_SCHEDULER == 'EulerAncestralDiscrete':
-            scheduler = EulerAncestralDiscreteScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
-        else:
-           scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler") 
-        
+def load_txt2img_pipe(scheduler):
+
+    if config.loaded_pipe != 'txt2img':
+
         print("Loading txt2img model into memory... This may take 5 minutes depending on available RAM.")
         
-        config.txt2img_pipe = StableDiffusionPipeline.from_pretrained(
+        pipe = StableDiffusionPipeline.from_pretrained(
               config.MODEL_ID,
               revision="fp16" if config.HALF_PRECISION else "fp32",
               torch_dtype=torch.float16 if config.HALF_PRECISION else torch.float32,
               scheduler=scheduler
             ).to("cuda")
 
-        loaded_pipe = 'txt2img'
-        
-
-        if config.SPLIT_ATTENTION:
-            config.txt2img_pipe.enable_attention_slicing()
-        if config.MEMORY_EFFICIENT_ATTENTION:
-            config.txt2img_pipe.enable_xformers_memory_efficient_attention()
+        config.loaded_pipe = 'txt2img'
+        print("txt2img model loaded")        
+        set_mem_optimizations(pipe)
+        pipe.to("cuda")
+        return pipe
             
-        print("txt2img model loaded")
 
-if loaded_pipe == None:
-    load_txt2img_pipe(loaded_pipe)
 
-def inference(prompt="", anti_prompt="", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED):
+def load_img2img_pipe(loaded_pipe):
+
+    if config.loaded_pipe != 'img2img':
+        
+        print("Loading img2img model into memory... This may take 5 minutes depending on available RAM.")
+        
+        config.img2img_pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+              config.MODEL_ID,
+              revision="fp16" if config.HALF_PRECISION else "fp32",
+              torch_dtype=torch.float16 if config.HALF_PRECISION else torch.float32,
+              scheduler=scheduler,
+              safety_checker=None,
+              feature_extractor=None
+            ).to("cuda")
+
+        config.loaded_pipe = 'img2img'
+        print("imgimg model loaded")        
+        set_mem_optimizations(pipe)
+        pipe.to("cuda")
+        return pipe
+
+
+def txt2img_inference(explore_prompt="", explore_anti_prompt="", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
     if seed == 0:
         seed = random.randint(0, 2147483647)
 
     generator = torch.Generator('cuda').manual_seed(seed)
-    prompt = prompt
+
+    if config.loaded_pipe == 'img2img':
+        config.img2img_pipe.to("cpu")
+    if config.txt2img_pipe is not None:
+        config.txt2img_pipe.to("cuda")
+    #torch.cuda.empty_cache()
 
     try:
+        prompt = explore_prompt
+        anti_prompt = explore_anti_prompt
         return text_to_image(prompt, anti_prompt, n_images,  guidance, steps, width, height, generator, seed)
 
     except:
         return None
+
+
+def img2img_inference(sketch_prompt="", sketch_anti_prompt="", sketch_image_input=None, n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
+    if seed == 0:
+        seed = random.randint(0, 2147483647)
+
+    generator = torch.Generator('cuda').manual_seed(seed)
+
+    if sketch_image_input is None:
+        print('Error, no input image provided')
+        return None
+
+    if config.loaded_pipe == 'txt2img':
+        config.txt2img_pipe.to("cpu")
+    if config.img2img_pipe is not None:
+        config.img2img_pipe.to("cuda")
+
+    try:
+        prompt = sketch_prompt
+        anti_prompt = sketch_anti_prompt
+        input_image = sketch_image_input
+        return image_to_image(prompt, anti_prompt, input_image, strength, n_images, guidance, steps, width, height, generator, seed)
+
+    except:
+        return None
+
+def save_images(output_name, result, file_metadata):
+    # save images to database
+    try:
+        conn = create_connection(ROOT_DIR+"/history.db")
+        add_prompt_metadata(conn, output_name, file_metadata)
+    except:
+        print( "Error saving image metadata to history.db")
+
+    # save image to folder
+    try:
+        for i, image in enumerate(result):
+            if config.SAVE_METADATA_TO_IMAGE and config.IMAGE_FORMAT == "PNG":
+                metadata = PngImagePlugin.PngInfo()
+                for key, value in file_metadata[i].items():
+                    if isinstance(key, str) and isinstance(value, str):
+                        metadata.add_text(key, value)
+                        #print(key, value)
+
+            image.save( IMAGE_OUTPUT_FOLDER+'/'+output_name+'_'+str(i)+'.'+config.IMAGE_FORMAT, config.IMAGE_FORMAT, pnginfo=(metadata if config.SAVE_METADATA_TO_IMAGE and config.IMAGE_FORMAT == "PNG" else None))
+    except:
+        print( "Error saving image " +output_name+'_'+str(i)+'.png')
+
 
 def text_to_image(prompt, anti_prompt, n_images,  guidance, steps, width, height, generator, seed):
 
     output_name = str(uuid.uuid4())
     result = []
     file_metadata = []
+
+    if config.txt2img_pipe is None:
+        config.txt2img_pipe = load_txt2img_pipe(scheduler)
     
     for settings in range(-1,2):
 
@@ -313,6 +396,72 @@ def text_to_image(prompt, anti_prompt, n_images,  guidance, steps, width, height
         temp_dict["negative_prompt"] = anti_prompt
         temp_dict["steps"] = str(temp_steps)
         temp_dict["scale"] = str(temp_guidance)
+        temp_dict["strength"] = str(0)
+        temp_dict["seed"] = str(seed)
+        temp_dict["n_images"] = str(n_images)
+
+        file_metadata.append(copy.deepcopy(temp_dict))
+
+        if n_images > 1:
+            for k in range(1,n_images):
+                file_metadata.append(copy.deepcopy(temp_dict))
+                file_metadata[-1]["seed"] = str(int(file_metadata[-1]["seed"])+k)
+    
+    save_images(output_name, result, file_metadata)
+
+        
+    return result
+
+def image_to_image(prompt, anti_prompt, input_image, strength, n_images, guidance, steps, width, height, generator, seed):
+
+    output_name = str(uuid.uuid4())
+    result = []
+    file_metadata = []
+
+    if config.img2img_pipe is None:
+        config.img2img_pipe = load_img2img_pipe(scheduler)
+
+    temp_image = input_image['image']
+    ratio = min(height / temp_image.height, width / temp_image.width)
+    temp_image = temp_image.resize((int(temp_image.width * ratio), int(temp_image.height * ratio)), Image.LANCZOS)
+    
+    for settings in range(-1,2):
+
+        if config.IMAGE_BRACKETING == False and settings != 0:
+            continue
+
+        # setup image properties
+        temp_guidance = guidance + config.IMAGE_SCALE_OFFSET * settings
+        temp_steps = steps + config.IMAGE_STEPS_OFFSET * settings
+        temp_strength = strength + config.IMAGE_STRENGTH_OFFSET * settings
+        
+        if settings == -1:
+            temp_prompt = output_name + ". " + prompt
+        else:
+            temp_prompt = prompt
+
+        temp_result = config.img2img_pipe(
+          temp_prompt,
+          num_images_per_prompt = n_images,
+          negative_prompt = anti_prompt,
+          image = temp_image,
+          num_inference_steps = int(temp_steps),
+          strength = temp_strength,
+          guidance_scale = temp_guidance,
+          #width = width,
+          #height = height,
+          generator = generator).images
+
+        result.extend(temp_result)
+        
+        # record image metadata
+        temp_dict = {}
+        temp_dict["scheduler"] = config.IMAGE_SCHEDULER
+        temp_dict["prompt"] = temp_prompt
+        temp_dict["negative_prompt"] = anti_prompt
+        temp_dict["steps"] = str(temp_steps)
+        temp_dict["scale"] = str(temp_guidance)
+        temp_dict["strength"] = str(temp_strength)
         temp_dict["seed"] = str(seed)
         temp_dict["n_images"] = str(n_images)
 
@@ -323,26 +472,11 @@ def text_to_image(prompt, anti_prompt, n_images,  guidance, steps, width, height
                 file_metadata.append(copy.deepcopy(temp_dict))
                 file_metadata[-1]["seed"] = str(int(file_metadata[-1]["seed"])+k)
 
-    # save images to database
     try:
-        conn = create_connection(ROOT_DIR+"/history.db")
-        add_prompt_metadata(conn, output_name, file_metadata)
+        temp_image.save( IMAGE_INPUT_FOLDER+'/'+output_name+'_input.'+config.IMAGE_FORMAT, config.IMAGE_FORMAT)
     except:
-        print( "Error saving image metadata to history.db")
+        print("Unable to save input image")
 
-    # save image to folder
-    try:
-        for i, image in enumerate(result):
-            if config.SAVE_METADATA_TO_IMAGE and config.IMAGE_FORMAT == "PNG":
-                metadata = PngImagePlugin.PngInfo()
-                for key, value in file_metadata[i].items():
-                    if isinstance(key, str) and isinstance(value, str):
-                        metadata.add_text(key, value)
-                        #print(key, value)
-
-            image.save( IMAGE_OUTPUT_FOLDER+'/'+output_name+'_'+str(i)+'.'+config.IMAGE_FORMAT, config.IMAGE_FORMAT, pnginfo=(metadata if config.SAVE_METADATA_TO_IMAGE and config.IMAGE_FORMAT == "PNG" else None))
-    except:
-        print( "Error saving image " +output_name+'_'+str(i)+'.png')
+    save_images(output_name, result, file_metadata)
         
- 
     return result
