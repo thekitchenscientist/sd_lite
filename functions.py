@@ -1,4 +1,4 @@
-﻿from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline, DiffusionPipeline, EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler
+﻿from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline, StableDiffusionDepth2ImgPipeline, DiffusionPipeline, EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler
 import torch
 from PIL import PngImagePlugin, Image
 import random
@@ -238,10 +238,11 @@ else:
     scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler") 
 
 def set_mem_optimizations(pipe):
-        if config.SPLIT_ATTENTION:
-            pipe.enable_attention_slicing()
         if config.MEMORY_EFFICIENT_ATTENTION:
             pipe.enable_xformers_memory_efficient_attention()
+        elif config.SPLIT_ATTENTION:
+            pipe.enable_attention_slicing()
+
 
 def load_txt2img_pipe(scheduler):
 
@@ -286,6 +287,25 @@ def load_img2img_pipe(loaded_pipe):
         return pipe
 
 
+def load_depth2img_pipe(loaded_pipe):
+
+    if config.loaded_pipe != 'depth2img':
+        
+        print("Loading depth2img model into memory... This may take 5 minutes depending on available RAM.")
+        
+        config.depth2img_pipe = StableDiffusionDepth2ImgPipeline.from_pretrained(
+              config.DEPTH_MODEL_ID,
+              revision="fp16" if config.HALF_PRECISION else "fp32",
+              torch_dtype=torch.float16 if config.HALF_PRECISION else torch.float32,
+              scheduler=scheduler
+            ).to("cuda")
+
+        config.loaded_pipe = 'depth2img'
+        print("depth2img model loaded")        
+        set_mem_optimizations(pipe)
+        pipe.to("cuda")
+        return pipe
+
 def txt2img_inference(explore_prompt="", explore_anti_prompt="", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
     if seed == 0:
         seed = random.randint(0, 2147483647)
@@ -294,6 +314,8 @@ def txt2img_inference(explore_prompt="", explore_anti_prompt="", n_images = conf
 
     if config.loaded_pipe == 'img2img':
         config.img2img_pipe.to("cpu")
+    if config.loaded_pipe == 'depth2img':
+        config.depth2img_pipe.to("cpu")
     if config.txt2img_pipe is not None:
         config.txt2img_pipe.to("cuda")
     #torch.cuda.empty_cache()
@@ -319,6 +341,8 @@ def img2img_inference(sketch_prompt="", sketch_anti_prompt="", sketch_image_inpu
 
     if config.loaded_pipe == 'txt2img':
         config.txt2img_pipe.to("cpu")
+    if config.loaded_pipe == 'depth2img':
+        config.depth2img_pipe.to("cpu")
     if config.img2img_pipe is not None:
         config.img2img_pipe.to("cuda")
 
@@ -327,6 +351,32 @@ def img2img_inference(sketch_prompt="", sketch_anti_prompt="", sketch_image_inpu
         anti_prompt = sketch_anti_prompt
         input_image = sketch_image_input
         return image_to_image(prompt, anti_prompt, input_image, strength, n_images, guidance, steps, width, height, generator, seed)
+
+    except:
+        return None
+
+def depth2img_inference(transform_prompt="", transform_anti_prompt="", transform_image_input=None, n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
+    if seed == 0:
+        seed = random.randint(0, 2147483647)
+
+    generator = torch.Generator('cuda').manual_seed(seed)
+
+    if transform_image_input is None:
+        print('Error, no input image provided')
+        return None
+
+    if config.loaded_pipe == 'txt2img':
+        config.txt2img_pipe.to("cpu")
+    if config.loaded_pipe == 'img2img':
+        config.img2img_pipe.to("cpu")
+    if config.depth2img_pipe is not None:
+        config.depth2img_pipe.to("cuda")
+
+    try:
+        prompt = transform_prompt
+        anti_prompt = transform_anti_prompt
+        input_image = transform_image_input
+        return depth_to_image(prompt, anti_prompt, input_image, strength, n_images, guidance, steps, width, height, generator, seed)
 
     except:
         return None
@@ -441,6 +491,75 @@ def image_to_image(prompt, anti_prompt, input_image, strength, n_images, guidanc
             temp_prompt = prompt
 
         temp_result = config.img2img_pipe(
+          temp_prompt,
+          num_images_per_prompt = n_images,
+          negative_prompt = anti_prompt,
+          image = temp_image,
+          num_inference_steps = int(temp_steps),
+          strength = temp_strength,
+          guidance_scale = temp_guidance,
+          #width = width,
+          #height = height,
+          generator = generator).images
+
+        result.extend(temp_result)
+        
+        # record image metadata
+        temp_dict = {}
+        temp_dict["scheduler"] = config.IMAGE_SCHEDULER
+        temp_dict["prompt"] = temp_prompt
+        temp_dict["negative_prompt"] = anti_prompt
+        temp_dict["steps"] = str(temp_steps)
+        temp_dict["scale"] = str(temp_guidance)
+        temp_dict["strength"] = str(temp_strength)
+        temp_dict["seed"] = str(seed)
+        temp_dict["n_images"] = str(n_images)
+
+        file_metadata.append(copy.deepcopy(temp_dict))
+
+        if n_images > 1:
+            for k in range(1,n_images):
+                file_metadata.append(copy.deepcopy(temp_dict))
+                file_metadata[-1]["seed"] = str(int(file_metadata[-1]["seed"])+k)
+
+    try:
+        temp_image.save( IMAGE_INPUT_FOLDER+'/'+output_name+'_input.'+config.IMAGE_FORMAT, config.IMAGE_FORMAT)
+    except:
+        print("Unable to save input image")
+
+    save_images(output_name, result, file_metadata)
+        
+    return result
+
+def depth_to_image(prompt, anti_prompt, input_image, strength, n_images, guidance, steps, width, height, generator, seed):
+
+    output_name = str(uuid.uuid4())
+    result = []
+    file_metadata = []
+
+    if config.depth2img_pipe is None:
+        config.depth2img_pipe = load_depth2img_pipe(scheduler)
+
+    temp_image = input_image['image']
+    ratio = min(height / temp_image.height, width / temp_image.width)
+    temp_image = temp_image.resize((int(temp_image.width * ratio), int(temp_image.height * ratio)), Image.LANCZOS)
+    
+    for settings in range(-1,2):
+
+        if config.IMAGE_BRACKETING == False and settings != 0:
+            continue
+
+        # setup image properties
+        temp_guidance = guidance + config.IMAGE_SCALE_OFFSET * settings
+        temp_steps = steps + config.IMAGE_STEPS_OFFSET * settings
+        temp_strength = strength + config.IMAGE_STRENGTH_OFFSET * settings
+        
+        if settings == -1:
+            temp_prompt = output_name + ". " + prompt
+        else:
+            temp_prompt = prompt
+
+        temp_result = config.depth2img_pipe(
           temp_prompt,
           num_images_per_prompt = n_images,
           negative_prompt = anti_prompt,
