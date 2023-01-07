@@ -28,6 +28,16 @@ with sd_lite:
                     explore_prompt = gr.Textbox(label="Prompt", show_label=False, lines=1, placeholder=f"What do you want to see?")
                     explore_anti_prompt = gr.Textbox(label="Negative prompt", show_label=False, lines=1, placeholder="What should the image avoid including?")
                 explore_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
+                            gr.HTML(
+                    f"""
+                        <div>
+                        <p>The text to image method has been replaced with Safer Diffusion which aims to supress inappropriate content in the categories of 'hate, harassment, violence, suffering, humiliation, harm, suicide, sexual, nudity, bodily fluids, blood, obscene gestures, illegal activity, drug use, theft, vandalism, weapons, child abuse, brutality & cruelty'.</p>
+<p>The model should not be used to intentionally create or disseminate images that create hostile or alienating environments for people. This includes generating images that people would foreseeably find disturbing, distressing, or offensive; or content that propagates historical or current stereotypes.
+<br>
+This model exacerbates biases to such a degree that viewer discretion must be advised irrespective of the input or its intent. The training data is lacking in knowledge of communities and cultures that use languages other than English and as a result the default output are from a white and western cultural perspective.</p>                        
+</div>
+                    """
+                )
         with gr.TabItem("Sketch"):
             with gr.Column():
                 with gr.Row():
@@ -36,12 +46,11 @@ with sd_lite:
                 with gr.Row():  
                     with gr.Column():
                         sketch_image_input = gr.Image(label="Image", show_label=False, type="pil", tool="sketch")
-                        #sketch_image_button = gr.Button("Generate Image")
                     sketch_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
             gr.HTML(
                     f"""
                         <div>
-            <p>The model licence requires you own the copyright to any images you input, in order for you to also have copyright over the output.</p>
+            <p>The model licence states it shall not be used to make alterations of copyrighted or licensed material that you do not have the rights for.</p>
                         </div>
                     """
                 )
@@ -54,6 +63,13 @@ with sd_lite:
                     with gr.Column():
                         transform_image_input = gr.Image(label="Image", show_label=False, type="pil", tool="sketch")
                     transform_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
+            gr.HTML(
+                    f"""
+                        <div>
+            <p>The model licence states it shall not be used to make alterations of copyrighted or licensed material that you do not have the rights for.</p>
+                        </div>
+                    """
+                )
     explore_inputs = [explore_prompt, explore_anti_prompt]
     explore_outputs = [explore_gallery]
     sketch_inputs = [sketch_prompt, sketch_anti_prompt, sketch_image_input]
@@ -62,7 +78,6 @@ with sd_lite:
     transform_outputs = [transform_gallery]
     explore_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
     explore_anti_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
-    #sketch_image_button.click(functions.img2img_inference, inputs=sketch_inputs, outputs=sketch_outputs)
     sketch_prompt.submit(functions.img2img_inference, inputs=sketch_inputs, outputs=sketch_outputs)
     sketch_anti_prompt.submit(functions.img2img_inference, inputs=sketch_inputs, outputs=sketch_outputs)
     transform_prompt.submit(functions.depth2img_inference, inputs=transform_inputs, outputs=transform_outputs)

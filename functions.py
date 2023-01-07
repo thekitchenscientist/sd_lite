@@ -1,5 +1,6 @@
 ﻿from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline, StableDiffusionDepth2ImgPipeline, DiffusionPipeline, EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler
 import torch
+from sld import SLDPipeline
 from PIL import PngImagePlugin, Image
 import random
 import config
@@ -249,12 +250,14 @@ def load_txt2img_pipe(scheduler):
     if config.loaded_pipe != 'txt2img':
 
         print("Loading txt2img model into memory... This may take 5 minutes depending on available RAM.")
-        
-        pipe = StableDiffusionPipeline.from_pretrained(
-              config.MODEL_ID,
-              revision="fp16" if config.HALF_PRECISION else "fp32",
-              torch_dtype=torch.float16 if config.HALF_PRECISION else torch.float32,
-              scheduler=scheduler
+
+        pipe = SLDPipeline.from_pretrained(
+            pretrained_model_name_or_path = config.MODEL_ID,
+            revision="fp16" if config.HALF_PRECISION else "fp32",
+            torch_dtype=torch.float16 if config.HALF_PRECISION else torch.float32,
+            scheduler=scheduler,
+            safety_checker=None,
+            feature_extractor=None
             ).to("cuda")
 
         config.loaded_pipe = 'txt2img'
@@ -262,6 +265,7 @@ def load_txt2img_pipe(scheduler):
         set_mem_optimizations(pipe)
         pipe.to("cuda")
         return pipe
+
             
 
 
@@ -318,7 +322,6 @@ def txt2img_inference(explore_prompt="", explore_anti_prompt="", n_images = conf
         config.depth2img_pipe.to("cpu")
     if config.txt2img_pipe is not None:
         config.txt2img_pipe.to("cuda")
-    #torch.cuda.empty_cache()
 
     try:
         prompt = explore_prompt
@@ -421,6 +424,7 @@ def text_to_image(prompt, anti_prompt, n_images,  guidance, steps, width, height
         # setup image properties
         temp_guidance = guidance + config.IMAGE_SCALE_OFFSET * settings
         temp_steps = steps + config.IMAGE_STEPS_OFFSET * settings
+        temp_warm_up = int((temp_steps/10)+1)
         
         if settings == -1:
             temp_prompt = output_name + ". " + prompt
@@ -428,14 +432,19 @@ def text_to_image(prompt, anti_prompt, n_images,  guidance, steps, width, height
             temp_prompt = prompt
 
         temp_result = config.txt2img_pipe(
-          temp_prompt,
-          num_images_per_prompt = n_images,
-          negative_prompt = anti_prompt,
-          num_inference_steps = int(temp_steps),
-          guidance_scale = temp_guidance,
-          width = width,
-          height = height,
-          generator = generator).images
+            temp_prompt,
+            num_images_per_prompt = n_images,
+            negative_prompt = anti_prompt,
+            num_inference_steps = int(temp_steps),
+            guidance_scale = temp_guidance,
+            width = width,
+            height = height,
+            generator = generator,
+            sld_warmup_steps=temp_warm_up, #7,
+            sld_guidance_scale= 5000,
+            sld_threshold=0.025,
+            sld_momentum_scale=0.5,
+            sld_mom_beta=0.7).images
 
         result.extend(temp_result)
         
