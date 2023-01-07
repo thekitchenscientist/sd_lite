@@ -16,11 +16,20 @@ The recommendation at the end of 2022 from StabilityAI is to use xformers for a 
 [Installation instructions](https://github.com/thekitchenscientist/sd_lite/wiki/Installation) are available in the project wiki, along with a detailed roadmap and guiding prinicples.
 
 ## Citation
-The text to image module makes use of Safe Latent Diffusion:
+The Explore (text to image) module makes use of Safe Latent Diffusion:  
 
-@article{schramowski2022safe,
-      title={Safe Latent Diffusion: Mitigating Inappropriate Degeneration in Diffusion Models}, 
-      author={Patrick Schramowski and Manuel Brack and Björn Deiseroth and Kristian Kersting},
-      year={2022},
-      journal={arXiv preprint arXiv:2211.05105}
-}
+@article{schramowski2022safe,  
+      title={Safe Latent Diffusion: Mitigating Inappropriate Degeneration in Diffusion Models},   
+      author={Patrick Schramowski and Manuel Brack and Björn Deiseroth and Kristian Kersting},  
+      year={2022},  
+      journal={arXiv preprint arXiv:2211.05105}  
+}  
+
+The Refine(text to image) module makes use of The Stable Artist:  
+
+@article{brack2022Stable,  
+      title={The Stable Artist: Steering Semantics in Diffusion Latent Space},   
+      author={Manuel Brack and Patrick Schramowski and Felix Friedrich and Kristian Kersting},  
+      year={2022},   
+      journal={arXiv preprint arXiv:2212.06013}  
+}  
