@@ -14,3 +14,13 @@ The guiding principal of this project is to be able to run Stable Diffusion with
 The recommendation at the end of 2022 from StabilityAI is to use xformers for a 25-40 % boost in diffusion speed. This requires Microsoft Visual Studio, Nvidia CUDA, git, ninja & wheel in order to build the .whl file compatible with your system. The payback on the additional 11GB hard drive space and 2 hours setup comes after generating about 3000 images.
 
 [Installation instructions](https://github.com/thekitchenscientist/sd_lite/wiki/Installation) are available in the project wiki, along with a detailed roadmap and guiding prinicples.
+
+## Citation
+The text to image module makes use of Safe Latent Diffusion:
+
+@article{schramowski2022safe,
+      title={Safe Latent Diffusion: Mitigating Inappropriate Degeneration in Diffusion Models}, 
+      author={Patrick Schramowski and Manuel Brack and Björn Deiseroth and Kristian Kersting},
+      year={2022},
+      journal={arXiv preprint arXiv:2211.05105}
+}
