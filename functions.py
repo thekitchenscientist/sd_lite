@@ -202,6 +202,33 @@ def add_prompt_metadata(conn, output_name, file_metadata):
         cur.execute(sql, prompt_metadata_list)
     conn.commit()
 
+def read_config_metadata(db_file=ROOT_DIR+"/history.db"):
+    """
+    Read the entries in the config table
+    :param conn:
+    :return: table contents
+    """
+    conn = create_connection(db_file)
+    cur = conn.cursor()
+    cur.execute("SELECT hash, MODEL_ID,IMAGE_SCHEDULER,IMAGE_WIDTH,IMAGE_HEIGHT,IMAGE_SEED,IMAGE_COUNT,IMAGE_BRACKETING FROM config")
+
+    rows = cur.fetchall()
+    
+    return rows
+
+def read_prompt_metadata(db_file=ROOT_DIR+"/history.db"):
+    """
+    Read the entries in the config table
+    :param conn:
+    :return: table contents
+    """
+    conn = create_connection(db_file)
+    cur = conn.cursor()
+    cur.execute("SELECT UUID, prompt, anti_prompt, steps, scale, strength, seed FROM prompts")
+
+    rows = cur.fetchall()
+    
+    return rows
 
 def lookup_config_hash(conn, config_hash):
     """
@@ -455,7 +482,7 @@ def text_to_image(prompt, anti_prompt, n_images,  guidance, steps, width, height
         temp_dict["negative_prompt"] = anti_prompt
         temp_dict["steps"] = str(temp_steps)
         temp_dict["scale"] = str(temp_guidance)
-        temp_dict["strength"] = str(0)
+        temp_dict["strength"] = str(-1)
         temp_dict["seed"] = str(seed)
         temp_dict["n_images"] = str(n_images)
 
@@ -480,7 +507,7 @@ def image_to_image(prompt, anti_prompt, input_image, strength, n_images, guidanc
     if config.img2img_pipe is None:
         config.img2img_pipe = load_img2img_pipe(scheduler)
 
-    temp_image = input_image['image']
+    temp_image = input_image #['image']
     ratio = min(height / temp_image.height, width / temp_image.width)
     temp_image = temp_image.resize((int(temp_image.width * ratio), int(temp_image.height * ratio)), Image.LANCZOS)
     
@@ -549,7 +576,7 @@ def depth_to_image(prompt, anti_prompt, input_image, strength, n_images, guidanc
     if config.depth2img_pipe is None:
         config.depth2img_pipe = load_depth2img_pipe(scheduler)
 
-    temp_image = input_image['image']
+    temp_image = input_image #['image']
     ratio = min(height / temp_image.height, width / temp_image.width)
     temp_image = temp_image.resize((int(temp_image.width * ratio), int(temp_image.height * ratio)), Image.LANCZOS)
     
