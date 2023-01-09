@@ -38,7 +38,7 @@ with sd_lite:
                     sketch_anti_prompt = gr.Textbox(label="Negative prompt", show_label=False, lines=1, placeholder="What should the image avoid including?")  
                 with gr.Row():  
                     with gr.Column(scale=1.2):
-                        sketch_image_input = gr.Image(label="Image", show_label=False, type="pil")#, tool="sketch")
+                        sketch_image_input = gr.Image(label="Image", show_label=False, type="pil", tool="color-sketch")
                     with gr.Column(scale=2.8):
                         sketch_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
             gr.Markdown("The model licence prohibits alterations of copyrighted or licensed material for which you do not have the rights. Read the conditions of the [Open RAIL++-M](https://huggingface.co/stabilityai/stable-diffusion-2/blob/main/LICENSE-MODEL) licence.")
@@ -61,10 +61,10 @@ with sd_lite:
                 with gr.Accordion("Selected image:", open=False) as history_show_image:
                     with gr.Row():
                         with gr.Column():
-                            history_chosen_image = gr.Image(label="Image", show_label=False, type="pil")
+                            history_chosen_image = gr.Image(label="Image", interactive=False, show_label=False, type="pil")
                         with gr.Column():
                             history_to_explore = gr.Button(value="Send Settings to Explore")
-                            history_to_sketch = gr.Button(value="Send Image to Sketch")
+                            history_to_sketch = gr.Button(value="Send Image to Sketch (double click or image will be zoomed-in")
                             history_to_transform = gr.Button(value="Send Image to Transform")
                 history_config_table = gr.DataFrame(CONFIG_HISTORY,  type="numpy", max_rows=5, overflow_row_behaviour="paginate", label="Config Settings", wrap=True, headers=["hash","MODEL","SCHEDULER","WIDTH","HEIGHT","SEED","IMAGE_COUNT","IMAGE_BRACKETING"])  
                 history_prompt_table = gr.DataFrame(PROMPT_HISTORY,  type="numpy", max_rows=10, overflow_row_behaviour="paginate", label="Prompt Settings", wrap=True, headers=["UUID","prompt","anti_prompt","steps","scale","strength","seed"])  
@@ -87,7 +87,14 @@ with sd_lite:
     history_config_choice.change(fn=lambda value: gr.update(choices=[item[0] for item in functions.read_prompt_metadata(value)]), inputs=history_config_choice, outputs=prompt_config_choice)
     prompt_config_choice.change(fn=lambda value: gr.update(open=True), inputs=prompt_config_choice, outputs=history_show_image)
     prompt_config_choice.change(fn=lambda value: gr.update(value=functions.IMAGE_OUTPUT_FOLDER+'/'+value), inputs=prompt_config_choice, outputs=history_chosen_image)
-    # functions to take selected image and load, if load then add onclick to pass to other tabs
+    history_to_explore.click(fn=lambda value: gr.update(value=functions.get_prompt_metadata(value)[0][1]), inputs=prompt_config_choice, outputs=explore_prompt)
+    history_to_explore.click(fn=lambda value: gr.update(value=functions.get_prompt_metadata(value)[0][2]), inputs=prompt_config_choice, outputs=explore_anti_prompt)
+    history_to_sketch.click(fn=lambda value: gr.update(value=functions.IMAGE_OUTPUT_FOLDER+'/'+value), inputs=prompt_config_choice, outputs=sketch_image_input)
+    history_to_sketch.click(fn=lambda value: gr.update(value=functions.get_prompt_metadata(value)[0][1]), inputs=prompt_config_choice, outputs=sketch_prompt)
+    history_to_sketch.click(fn=lambda value: gr.update(value=functions.get_prompt_metadata(value)[0][2]), inputs=prompt_config_choice, outputs=sketch_anti_prompt)
+    history_to_transform.click(fn=lambda value: gr.update(value=functions.IMAGE_OUTPUT_FOLDER+'/'+value), inputs=prompt_config_choice, outputs=transform_image_input)
+    history_to_transform.click(fn=lambda value: gr.update(value=functions.get_prompt_metadata(value)[0][1]), inputs=prompt_config_choice, outputs=transform_prompt)
+    history_to_transform.click(fn=lambda value: gr.update(value=functions.get_prompt_metadata(value)[0][2]), inputs=prompt_config_choice, outputs=transform_anti_prompt)
 
 sd_lite.queue()
 sd_lite.launch(debug=True)

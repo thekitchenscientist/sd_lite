@@ -232,6 +232,22 @@ def read_prompt_metadata(config_hash=None, db_file=ROOT_DIR+"/history.db"):
     
     return rows
 
+def get_prompt_metadata(UUID=None, db_file=ROOT_DIR+"/history.db"):
+    """
+    Read the entries in the config table
+    :param conn:
+    :return: table contents
+    """
+    conn = create_connection(db_file)
+    cur = conn.cursor()
+    if UUID is None:
+        cur.execute("SELECT UUID, prompt, anti_prompt, steps, scale, strength, seed FROM prompts")
+    else:
+        cur.execute("SELECT UUID, prompt, anti_prompt, steps, scale, strength, seed FROM prompts WHERE UUID=?", (UUID,))
+    rows = cur.fetchall()
+
+    return rows
+
 def lookup_config_hash(conn, config_hash):
     """
     Query tasks by priority
@@ -314,7 +330,7 @@ def load_img2img_pipe(loaded_pipe):
             ).to("cuda")
 
         config.loaded_pipe = 'img2img'
-        print("imgimg model loaded")        
+        print("img2img model loaded")        
         set_mem_optimizations(pipe)
         pipe.to("cuda")
         return pipe
@@ -524,6 +540,7 @@ def image_to_image(prompt, anti_prompt, input_image, strength, n_images, guidanc
         temp_strength = strength + config.IMAGE_STRENGTH_OFFSET * settings
         
         if settings == -1:
+            #need to check if already has UUID at start, if so don't add another
             temp_prompt = output_name + ". " + prompt
         else:
             temp_prompt = prompt
