@@ -1,8 +1,8 @@
 SPLIT_ATTENTION= True
 MEMORY_EFFICIENT_ATTENTION = True
 HALF_PRECISION = True
-MODEL_ID = 'C:/Models/stable-diffusion-2-1-base' #'stabilityai/stable-diffusion-2-1-base'
-DEPTH_MODEL_ID = 'C:/Models/stable-diffusion-2-depth' #'stabilityai/stable-diffusion-2-depth '
+MODEL_ID = 'stabilityai/stable-diffusion-2-1-base'
+DEPTH_MODEL_ID = 'stabilityai/stable-diffusion-2-depth'
 IMAGE_INPUT_FOLDER = None
 IMAGE_OUTPUT_FOLDER = None
 IMAGE_FORMAT = 'PNG'
