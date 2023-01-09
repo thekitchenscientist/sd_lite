@@ -216,7 +216,7 @@ def read_config_metadata(db_file=ROOT_DIR+"/history.db"):
     
     return rows
 
-def read_prompt_metadata(db_file=ROOT_DIR+"/history.db"):
+def read_prompt_metadata(config_hash=None, db_file=ROOT_DIR+"/history.db"):
     """
     Read the entries in the config table
     :param conn:
@@ -224,8 +224,10 @@ def read_prompt_metadata(db_file=ROOT_DIR+"/history.db"):
     """
     conn = create_connection(db_file)
     cur = conn.cursor()
-    cur.execute("SELECT UUID, prompt, anti_prompt, steps, scale, strength, seed FROM prompts")
-
+    if config_hash is None:
+        cur.execute("SELECT UUID, prompt, anti_prompt, steps, scale, strength, seed FROM prompts")
+    else:
+        cur.execute("SELECT UUID, prompt, anti_prompt, steps, scale, strength, seed FROM prompts WHERE config_hash=?", (config_hash,))
     rows = cur.fetchall()
     
     return rows

@@ -33,20 +33,21 @@ def main(args):
 
 	#parse prompt_list
 	for prompt_parts in prompt_list:
-		explore_prompt = ""
-		explore_anti_prompt = ""
+		prompt = ""
+		anti_prompt = ""
 		prompt_text = prompt_parts.split("|")
-		explore_prompt = prompt_text[0]
+		prompt = prompt_text[0]
 		if len(prompt_text) > 1:
-			explore_anti_prompt = prompt_text[-1]
+			anti_prompt = prompt_text[-1]
 
-		print(explore_prompt,explore_anti_prompt)
+		print(prompt,anti_prompt)
 
 		functions.txt2img_inference(explore_prompt=prompt, explore_anti_prompt=anti_prompt, n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED)
 
 
 #parse supplied data
 parser = ArgumentParser()
+parser.add_argument("--mode", type=str, default="text", help="inference mode: text, image, depth")
 parser.add_argument("--prompts", type=str, default=None, help="txt prompt file name (and URL if not .\prompts). One line per prompt, use | to add anti-prompts")
 parser.add_argument("--config", type=str, default=None, help="(None|config) alternative configuration file (in .\prompts)")
 args = parser.parse_args()
