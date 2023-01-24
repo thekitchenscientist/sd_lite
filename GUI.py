@@ -26,6 +26,8 @@ with sd_lite:
                 with gr.Row():
                     explore_prompt = gr.Textbox(label="Prompt", show_label=False, lines=1, placeholder=f"What do you want to see?")
                     explore_anti_prompt = gr.Textbox(label="Negative prompt", show_label=False, lines=1, placeholder="What should the image avoid including?")
+                with gr.Row():
+                    explore_styling = gr.Textbox(label="Style", show_label=False, lines=1, placeholder=f"How do you want it styled?")
                 explore_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
             with gr.Accordion("The text to image method is using Safer Diffusion which aims to supress inappropriate content", open=False):
                 gr.Markdown("After (n_steps*0.1)+1 to allow the composition to form, the model then will steer the image diffusion away from the categories of 'hate, harassment, violence, suffering, humiliation, harm, suicide, sexual, nudity, bodily fluids, blood, obscene gestures, illegal activity, drug use, theft, vandalism, weapons, child abuse, brutality & cruelty.")
@@ -71,7 +73,7 @@ with sd_lite:
                 
             gr.Markdown("The model licence prohibits alterations of copyrighted or licensed material for which you do not have the rights. Read the conditions of the [Open RAIL++-M](https://huggingface.co/stabilityai/stable-diffusion-2/blob/main/LICENSE-MODEL) licence.")
 
-    explore_inputs = [explore_prompt, explore_anti_prompt]
+    explore_inputs = [explore_prompt, explore_anti_prompt,explore_styling]
     explore_outputs = [explore_gallery]
     sketch_inputs = [sketch_prompt, sketch_anti_prompt, sketch_image_input]
     sketch_outputs = [sketch_gallery]
@@ -79,6 +81,7 @@ with sd_lite:
     transform_outputs = [transform_gallery]
     explore_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
     explore_anti_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
+    explore_styling.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
     sketch_prompt.submit(functions.img2img_inference, inputs=sketch_inputs, outputs=sketch_outputs)
     sketch_anti_prompt.submit(functions.img2img_inference, inputs=sketch_inputs, outputs=sketch_outputs)
     transform_prompt.submit(functions.depth2img_inference, inputs=transform_inputs, outputs=transform_outputs)

@@ -225,6 +225,8 @@ class SLDPipeline(DiffusionPipeline):
         sld_threshold: Optional[float] = 0.01,
         sld_momentum_scale: Optional[float] = 0.3,
         sld_mom_beta: Optional[float] = 0.4,
+        prompt_styling: Optional[Union[str, List[str]]] = None,
+        styling_steps: Optional[float] = 0.2,
         **kwargs,
     ):
         r"""
@@ -381,6 +383,32 @@ class SLDPipeline(DiffusionPipeline):
             uncond_embeddings = uncond_embeddings.repeat(1, num_images_per_prompt, 1)
             uncond_embeddings = uncond_embeddings.view(batch_size * num_images_per_prompt, seq_len, -1)
 
+        change_over_step = int(num_inference_steps+1)
+        if prompt_styling is not None:
+            # prepare the switch over for prompt_styling
+            if styling_steps < 1:
+                change_over_step = int(num_inference_steps*styling_steps)
+            else:
+                change_over_step = int(num_inference_steps)
+
+            # get prompt_styling text embeddings
+            prompt_styling_text_inputs = self.tokenizer(
+                prompt_styling,
+                padding="max_length",
+                max_length=self.tokenizer.model_max_length,
+                return_tensors="pt",
+            )
+            prompt_styling_text_input_ids = prompt_styling_text_inputs.input_ids
+
+            if prompt_styling_text_input_ids.shape[-1] > self.tokenizer.model_max_length:
+                removed_text = self.tokenizer.batch_decode(prompt_styling_text_input_ids[:, self.tokenizer.model_max_length :])
+                logger.warning(
+                    "The following part of your prompt_styling input was truncated because CLIP can only handle sequences up to"
+                    f" {self.tokenizer.model_max_length} tokens: {removed_text}"
+                )
+                prompt_styling_text_input_ids = prompt_styling_text_input_ids[:, : self.tokenizer.model_max_length]
+            prompt_styling_embeddings = self.text_encoder(prompt_styling_text_input_ids.to(self.device))[0]
+
             # Encode the safety concept text
             if enable_safety_guidance:
                 safety_concept_input = self.tokenizer(
@@ -400,10 +428,18 @@ class SLDPipeline(DiffusionPipeline):
                 # For classifier free guidance, we need to do two forward passes.
                 # Here we concatenate the unconditional and text embeddings into a single batch
                 # to avoid doing two forward passes
-                text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings])
+                if prompt_styling is not None:
+                    text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings, prompt_styling_embeddings])
+                else:
+                    text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings])
 
             else:
-                text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
+                if prompt_styling is not None:
+                    text_embeddings = torch.cat([uncond_embeddings, text_embeddings, prompt_styling_embeddings])
+                else:
+                    text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
+
+
 
         # get the initial random noise unless the user supplied it
 
@@ -451,9 +487,20 @@ class SLDPipeline(DiffusionPipeline):
 
         safety_momentum = None
 
+
+
+        #prepare the correct number of noise latents 
+        latent_multiplier = 2
+        if enable_safety_guidance:
+            latent_multiplier +=1
+        if prompt_styling is not None:
+            latent_multiplier +=1
+
+        #print(latent_multiplier,prompt_styling,change_over_step, text_embeddings.shape)
+
         for i, t in enumerate(self.progress_bar(timesteps_tensor)):
             # expand the latents if we are doing classifier free guidance
-            latent_model_input = torch.cat([latents] * (3 if enable_safety_guidance else 2)) \
+            latent_model_input = torch.cat([latents] * (latent_multiplier)) \
                 if do_classifier_free_guidance else latents
             latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
@@ -462,8 +509,12 @@ class SLDPipeline(DiffusionPipeline):
 
             # perform guidance
             if do_classifier_free_guidance:
-                noise_pred_out = noise_pred.chunk((3 if enable_safety_guidance else 2))
-                noise_pred_uncond, noise_pred_text = noise_pred_out[0], noise_pred_out[1]
+                noise_pred_out = noise_pred.chunk((latent_multiplier))
+                            # switch the prompt, if provided
+                if prompt_styling is not None and i > change_over_step:
+                    noise_pred_uncond, noise_pred_text = noise_pred_out[0], noise_pred_out[-1]
+                else:
+                    noise_pred_uncond, noise_pred_text = noise_pred_out[0], noise_pred_out[1]
 
                 # default classifier free guidance
                 noise_guidance = (noise_pred_text - noise_pred_uncond)
@@ -501,6 +552,7 @@ class SLDPipeline(DiffusionPipeline):
 
                 # compute the previous noisy sample x_t -> x_t-1
             latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+
 
             # call the callback, if provided
             if callback is not None and i % callback_steps == 0:
