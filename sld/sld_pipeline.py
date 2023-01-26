@@ -225,8 +225,8 @@ class SLDPipeline(DiffusionPipeline):
         sld_threshold: Optional[float] = 0.01,
         sld_momentum_scale: Optional[float] = 0.3,
         sld_mom_beta: Optional[float] = 0.4,
-        prompt_styling: Optional[Union[str, List[str]]] = None,
-        styling_steps: Optional[float] = 0.2,
+        alt_prompt: Optional[Union[str, List[str]]] = None,
+        alt_mode: Optional[str] = "0.15",
         **kwargs,
     ):
         r"""
@@ -384,30 +384,43 @@ class SLDPipeline(DiffusionPipeline):
             uncond_embeddings = uncond_embeddings.view(batch_size * num_images_per_prompt, seq_len, -1)
 
         change_over_step = int(num_inference_steps+1)
-        if prompt_styling is not None:
-            # prepare the switch over for prompt_styling
-            if styling_steps < 1:
-                change_over_step = int(num_inference_steps*styling_steps)
-            else:
-                change_over_step = int(num_inference_steps)
+        if alt_prompt is not None:
+            # prepare the switch over for alt_prompt
 
-            # get prompt_styling text embeddings
-            prompt_styling_text_inputs = self.tokenizer(
-                prompt_styling,
+            if len(alt_mode) <= 2:
+                alt_prompt = prompt + ". "+ alt_prompt
+                change_over_step = int(num_inference_steps)
+            elif len(alt_mode) <= 4:
+                alt_prompt = prompt + ". "+ alt_prompt
+                change_over_step = int(num_inference_steps*float(alt_mode))
+            elif alt_mode[:6] == "switch":
+                change_over_step = int(num_inference_steps*float(alt_mode[-3:-1])/100)
+                alt_mode = "switch"
+            elif alt_mode[:5] == "delay":
+                change_over_step = int(num_inference_steps*float(alt_mode[-3:-1])/100)
+                alt_prompt = prompt + ". "+ alt_prompt
+                alt_mode = "0"
+            elif alt_mode[:6] == "weight":
+                change_over_step = int(alt_mode[-2:])
+                alt_mode = "weight"
+            print(change_over_step,alt_prompt, alt_mode)
+            # get alt_prompt text embeddings
+            alt_prompt_text_inputs = self.tokenizer(
+                alt_prompt,
                 padding="max_length",
                 max_length=self.tokenizer.model_max_length,
                 return_tensors="pt",
             )
-            prompt_styling_text_input_ids = prompt_styling_text_inputs.input_ids
+            alt_prompt_text_input_ids = alt_prompt_text_inputs.input_ids
 
-            if prompt_styling_text_input_ids.shape[-1] > self.tokenizer.model_max_length:
-                removed_text = self.tokenizer.batch_decode(prompt_styling_text_input_ids[:, self.tokenizer.model_max_length :])
+            if alt_prompt_text_input_ids.shape[-1] > self.tokenizer.model_max_length:
+                removed_text = self.tokenizer.batch_decode(alt_prompt_text_input_ids[:, self.tokenizer.model_max_length :])
                 logger.warning(
-                    "The following part of your prompt_styling input was truncated because CLIP can only handle sequences up to"
+                    "The following part of your alt_prompt input was truncated because CLIP can only handle sequences up to"
                     f" {self.tokenizer.model_max_length} tokens: {removed_text}"
                 )
-                prompt_styling_text_input_ids = prompt_styling_text_input_ids[:, : self.tokenizer.model_max_length]
-            prompt_styling_embeddings = self.text_encoder(prompt_styling_text_input_ids.to(self.device))[0]
+                alt_prompt_text_input_ids = alt_prompt_text_input_ids[:, : self.tokenizer.model_max_length]
+            alt_prompt_embeddings = self.text_encoder(alt_prompt_text_input_ids.to(self.device))[0]
 
             # Encode the safety concept text
             if enable_safety_guidance:
@@ -428,14 +441,14 @@ class SLDPipeline(DiffusionPipeline):
                 # For classifier free guidance, we need to do two forward passes.
                 # Here we concatenate the unconditional and text embeddings into a single batch
                 # to avoid doing two forward passes
-                if prompt_styling is not None:
-                    text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings, prompt_styling_embeddings])
+                if alt_prompt is not None:
+                    text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings, alt_prompt_embeddings])
                 else:
                     text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings])
 
             else:
-                if prompt_styling is not None:
-                    text_embeddings = torch.cat([uncond_embeddings, text_embeddings, prompt_styling_embeddings])
+                if alt_prompt is not None:
+                    text_embeddings = torch.cat([uncond_embeddings, text_embeddings, alt_prompt_embeddings])
                 else:
                     text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
 
@@ -493,10 +506,10 @@ class SLDPipeline(DiffusionPipeline):
         latent_multiplier = 2
         if enable_safety_guidance:
             latent_multiplier +=1
-        if prompt_styling is not None:
+        if alt_prompt is not None:
             latent_multiplier +=1
 
-        #print(latent_multiplier,prompt_styling,change_over_step, text_embeddings.shape)
+        #print(latent_multiplier,alt_prompt,change_over_step, text_embeddings.shape)
 
         for i, t in enumerate(self.progress_bar(timesteps_tensor)):
             # expand the latents if we are doing classifier free guidance
@@ -510,8 +523,16 @@ class SLDPipeline(DiffusionPipeline):
             # perform guidance
             if do_classifier_free_guidance:
                 noise_pred_out = noise_pred.chunk((latent_multiplier))
-                            # switch the prompt, if provided
-                if prompt_styling is not None and i > change_over_step:
+                            # switch the prompt, if provided 
+                if alt_mode == "alternating" and i % 2 > 0:
+                    noise_pred_uncond, noise_pred_text = noise_pred_out[0], noise_pred_out[-1]
+                elif alt_mode == "increasing B":
+                    noise_pred_uncond, noise_pred_text = noise_pred_out[0], (noise_pred_out[1]*((num_inference_steps-i)/num_inference_steps)+noise_pred_out[-1]*(i/num_inference_steps))
+                elif alt_mode == "decreasing B":
+                    noise_pred_uncond, noise_pred_text = noise_pred_out[0], (noise_pred_out[-1]*((num_inference_steps-i)/num_inference_steps)+noise_pred_out[1]*(i/num_inference_steps))
+                elif alt_mode == "weight":
+                    noise_pred_uncond, noise_pred_text = noise_pred_out[0], (noise_pred_out[1]*(100-change_over_step)/100+noise_pred_out[-1]*(change_over_step)/100)
+                elif alt_prompt is not None and i > change_over_step:
                     noise_pred_uncond, noise_pred_text = noise_pred_out[0], noise_pred_out[-1]
                 else:
                     noise_pred_uncond, noise_pred_text = noise_pred_out[0], noise_pred_out[1]

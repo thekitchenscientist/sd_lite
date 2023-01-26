@@ -355,7 +355,7 @@ def load_depth2img_pipe(loaded_pipe):
         pipe.to("cuda")
         return pipe
 
-def txt2img_inference(explore_prompt="", explore_anti_prompt="", explore_styling="", explore_anti_styling="", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
+def txt2img_inference(explore_prompt="", explore_anti_prompt="", explore_alt_prompt=" ", explore_alt_mode="0.15", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
     if seed == 0:
         seed = random.randint(0, 2147483647)
 
@@ -367,16 +367,16 @@ def txt2img_inference(explore_prompt="", explore_anti_prompt="", explore_styling
         config.depth2img_pipe.to("cpu")
     if config.txt2img_pipe is not None:
         config.txt2img_pipe.to("cuda")
-
-    try:
-        prompt = explore_prompt
-        anti_prompt = explore_anti_prompt
-        style = explore_styling 
-        anti_style = explore_anti_styling
-        return text_to_image_sld(prompt, anti_prompt, style, n_images,  guidance, steps, width, height, generator, seed)
-
-    except:
-        return None
+    if len(explore_prompt)+len(explore_anti_prompt)+len(explore_alt_prompt) > 1:
+        try:
+            prompt = explore_prompt
+            anti_prompt = explore_anti_prompt
+            alt_prompt = explore_alt_prompt
+            alt_mode = explore_alt_mode
+            print("explore")
+            return text_to_image_sld(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance, steps, width, height, generator, seed)
+        except:
+            return None
 
 
 def img2img_inference(sketch_prompt="", sketch_anti_prompt="", sketch_image_input=None, n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
@@ -470,15 +470,14 @@ def pipe_callback(iter, t, latents):
         #global temp_image_data
         #temp_image_data = image
 
-def text_to_image_sld(prompt, anti_prompt, style, n_images,  guidance, steps, width, height, generator, seed):
+def text_to_image_sld(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance, steps, width, height, generator, seed):
 
     output_name = str(uuid.uuid4())
     result = []
     file_metadata = []
-    if len(style) > 0:
-        styled_prompt = prompt + ". " + style
-    else:
-        styled_prompt = " "
+
+    if len(alt_prompt) == 0:
+        alt_prompt = " "
 
     if config.txt2img_pipe is None:
         config.txt2img_pipe = load_txt2img_pipe_sld(scheduler)
@@ -514,143 +513,8 @@ def text_to_image_sld(prompt, anti_prompt, style, n_images,  guidance, steps, wi
             sld_threshold=0.025,
             sld_momentum_scale=0.5,
             sld_mom_beta=0.7,
-            prompt_styling=styled_prompt,
-            styling_steps=0.15
-            ).images
-        
-        result.extend(temp_result)
-        
-        # record image metadata
-        temp_dict = {}
-        temp_dict["scheduler"] = config.IMAGE_SCHEDULER
-        temp_dict["prompt"] = temp_prompt
-        temp_dict["negative_prompt"] = temp_anti_prompt
-        temp_dict["steps"] = str(temp_steps)
-        temp_dict["scale"] = str(temp_guidance)
-        temp_dict["strength"] = str(-1)
-        temp_dict["seed"] = str(seed)
-        temp_dict["n_images"] = str(n_images)
-
-        file_metadata.append(copy.deepcopy(temp_dict))
-
-        if n_images > 1:
-            for k in range(1,n_images):
-                file_metadata.append(copy.deepcopy(temp_dict))
-                file_metadata[-1]["seed"] = str(int(file_metadata[-1]["seed"])+k)
-    
-    save_images(output_name, result, file_metadata)
-
-        
-    return result
-
-
-def load_txt2img_pipe_p2p(scheduler):
-
-    if config.loaded_pipe != 'txt2img':
-
-        print("Loading txt2img model into memory... This may take 5 minutes depending on available RAM.")
-
-        config = OmegaConf.load(f"{opt.config}")
-        model = load_model_from_config(config, f"{opt.ckpt}")
-        model = model.half()
-
-        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        model = model.to(device)
-
-        sampler = DDIMSampler(model)
-
-        config.loaded_pipe = 'txt2img'
-        print("txt2img model loaded")        
-        set_mem_optimizations(model)
-        return model
-
-def text_to_image_p2p(prompt, anti_prompt, style, n_images,  guidance, steps, width, height, generator, seed):
-
-    output_name = str(uuid.uuid4())
-    result = []
-    file_metadata = []
-    initial_steps = int(steps*0.25)
-    styled_steps = steps - initial_steps
-    intial_prompt = prompt
-    intial_anti_prompt = anti_prompt
-    sytled_prompt = prompt + ". " + style
-    prompt_guidance = [intial_prompt] * initial_steps
-    prompt_guidance.extend([sytled_prompt] * styled_steps)
-    print(prompt_guidance)
-
-    if config.txt2img_pipe is None:
-        config.txt2img_pipe = load_txt2img_pipe_p2p(scheduler)
-
-    start_code = torch.randn([n_images, 4, height // 8, width // 8], device=device)
-    with torch.no_grad():
-        with model.ema_scope():                      
-            uc = None
-            if opt.scale != 1.0:
-                uc = [""]
-            if isinstance(prompts, tuple):
-                prompts = list(prompts)
-            # this processes the prompt into a list of how it should read at each step
-            #prompt_guidance = prompt_parser.get_prompt_guidance(prompts[0], opt.ddim_steps, batch_size)
-            # this is the starting prompt
-            c = prompt_guidance[0]
-
-            shape = [4, height // 8, width // 8]
-            samples_ddim, _ = sampler.sample(S=steps,
-                                                conditioning=c,
-                                                batch_size=n_images,
-                                                shape=shape,
-                                                verbose=False,
-                                                unconditional_guidance_scale=guidance,
-                                                unconditional_conditioning=uc,
-                                                eta=0.0,
-                                                x_T=start_code,
-                                                prompt_guidance=prompt_guidance)
-
-            x_samples_ddim = model.decode_first_stage(samples_ddim)
-            x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
-
-            if not opt.skip_save:
-                for x_sample in x_samples_ddim:
-                    x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
-                    img = Image.fromarray(x_sample.astype(np.uint8))
-                    img.save(os.path.join(IMAGE_OUTPUT_FOLDER, f"{base_count:05}.png"))
-                    base_count += 1
-
-    for settings in range(-1,2):
-
-        temp_image_name = None
-        temp_image_data = None
-        temp_image_dict = {}
-
-        if config.IMAGE_BRACKETING == False and settings != 0:
-            continue
-
-        # setup image properties
-        temp_guidance = guidance + config.IMAGE_SCALE_OFFSET * settings
-        temp_steps = steps + config.IMAGE_STEPS_OFFSET * settings
-        temp_warm_up = int((temp_steps/10)+1)
-        
-        if settings == -1:
-            temp_prompt = output_name + " " + prompt
-        else:
-            temp_prompt = prompt
-        temp_anti_prompt = anti_prompt
-
-
-        temp_result = config.txt2img_pipe(
-            temp_prompt,
-            num_images_per_prompt = n_images,
-            negative_prompt = temp_anti_prompt,
-            num_inference_steps = int(temp_steps),
-            guidance_scale = temp_guidance,
-            width = width,
-            height = height,
-            generator = generator,
-            sld_warmup_steps=temp_warm_up, #7,
-            sld_guidance_scale= 5000,
-            sld_threshold=0.025,
-            sld_momentum_scale=0.5,
-            sld_mom_beta=0.7
+            alt_prompt=alt_prompt,
+            alt_mode= alt_mode #"average" #"0.15"
             ).images
         
         result.extend(temp_result)

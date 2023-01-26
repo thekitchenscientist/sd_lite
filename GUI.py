@@ -18,7 +18,7 @@ with sd_lite:
         f"""
           ## Stable Diffusion 2.1
 
-          Press enter after typing in either text box to start the image generation process. The first time you trigger generation on any tab it will fail because the model is loading. Once its loaded simply click into a text box again and press enter.
+          Press enter after typing in either text box to start the image generation process. The first time you trigger generation on the Sketch or Transform tab it will fail because the model is loading. Once its loaded simply click into a text box again and press enter.
         """)
     with gr.Tabs():
         with gr.TabItem("Explore"):
@@ -27,7 +27,7 @@ with sd_lite:
                     explore_prompt = gr.Textbox(label="Prompt", show_label=False, lines=1, placeholder=f"What do you want to see?")
                     explore_anti_prompt = gr.Textbox(label="Negative prompt", show_label=False, lines=1, placeholder="What should the image avoid including?")
                 with gr.Row():
-                    explore_styling = gr.Textbox(label="Style", show_label=False, lines=1, placeholder=f"How do you want it styled?")
+                    explore_alt_prompt = gr.Textbox(label="Alternative prompt", show_label=False, lines=1, placeholder=f"How do you want it styled?")
                 explore_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
             with gr.Accordion("The text to image method is using Safer Diffusion which aims to supress inappropriate content", open=False):
                 gr.Markdown("After (n_steps*0.1)+1 to allow the composition to form, the model then will steer the image diffusion away from the categories of 'hate, harassment, violence, suffering, humiliation, harm, suicide, sexual, nudity, bodily fluids, blood, obscene gestures, illegal activity, drug use, theft, vandalism, weapons, child abuse, brutality & cruelty.")
@@ -55,6 +55,20 @@ with sd_lite:
                     with gr.Column(scale=2.8):
                         transform_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
             gr.Markdown("The model licence prohibits alterations of copyrighted or licensed material for which you do not have the rights. Read the conditions of the [Open RAIL++-M](https://huggingface.co/stabilityai/stable-diffusion-2/blob/main/LICENSE-MODEL) licence.")
+        with gr.TabItem("Morph"):
+            with gr.Column():
+                with gr.Row():
+                    with gr.Column():
+                        morph_prompt = gr.Textbox(label="Prompt", show_label=False, lines=1, placeholder=f"What do you want to use for image A? (press enter to preview)")
+                        morph_prompt_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
+                    with gr.Column():
+                        morph_alt_prompt = gr.Textbox(label="Prompt", show_label=False, lines=1, placeholder=f"What do you want to use for image B? (press enter to preview)")
+                        morph_alt_prompt_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
+                with gr.Row():
+                    morph_anti_prompt = gr.Textbox(label="Negative prompt (applied to all images)", show_label=True, lines=1, placeholder="What should the images avoid including?")
+                    morph_choice = gr.Dropdown(label="Morph Mode (pick one to start image generation)",choices=["alternating", "increasing B", "decreasing B",  "switch A:B 25%","switch A:B 50%","switch A:B 75%", "delay adding B until 15%", "delay adding B until 30%", "delay adding B until 45%", "weight A:B 75:25", "weight A:B 50:50", "weight A:B 25:75"])
+                with gr.Column():
+                    morph_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
         with gr.TabItem("History"):
             with gr.Column():
                 with gr.Row():
@@ -73,19 +87,28 @@ with sd_lite:
                 
             gr.Markdown("The model licence prohibits alterations of copyrighted or licensed material for which you do not have the rights. Read the conditions of the [Open RAIL++-M](https://huggingface.co/stabilityai/stable-diffusion-2/blob/main/LICENSE-MODEL) licence.")
 
-    explore_inputs = [explore_prompt, explore_anti_prompt,explore_styling]
+    explore_inputs = [explore_prompt, explore_anti_prompt,explore_alt_prompt]
     explore_outputs = [explore_gallery]
     sketch_inputs = [sketch_prompt, sketch_anti_prompt, sketch_image_input]
     sketch_outputs = [sketch_gallery]
     transform_inputs = [transform_prompt, transform_anti_prompt, transform_image_input]
     transform_outputs = [transform_gallery]
+    morph_prompt_inputs = [morph_prompt, morph_anti_prompt]
+    morph_prompt_outputs = [morph_prompt_gallery]
+    morph_alt_prompt_inputs = [morph_alt_prompt, morph_anti_prompt]
+    morph_alt_prompt_outputs = [morph_alt_prompt_gallery]
+    morph_inputs = [morph_prompt, morph_anti_prompt, morph_alt_prompt, morph_choice]
+    morph_outputs = [morph_gallery]
     explore_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
     explore_anti_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
-    explore_styling.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
+    explore_alt_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
     sketch_prompt.submit(functions.img2img_inference, inputs=sketch_inputs, outputs=sketch_outputs)
     sketch_anti_prompt.submit(functions.img2img_inference, inputs=sketch_inputs, outputs=sketch_outputs)
     transform_prompt.submit(functions.depth2img_inference, inputs=transform_inputs, outputs=transform_outputs)
     transform_anti_prompt.submit(functions.depth2img_inference, inputs=transform_inputs, outputs=transform_outputs)
+    morph_prompt.submit(functions.txt2img_inference, inputs=morph_prompt_inputs, outputs=morph_prompt_outputs)
+    morph_alt_prompt.submit(functions.txt2img_inference, inputs=morph_alt_prompt_inputs, outputs=morph_alt_prompt_outputs)
+    morph_choice.change(functions.txt2img_inference, inputs=morph_inputs, outputs=morph_outputs)
     history_config_choice.change(fn=lambda value: gr.update(value=functions.read_prompt_metadata(value)), inputs=history_config_choice, outputs=history_prompt_table)
     history_config_choice.change(fn=lambda value: gr.update(choices=[item[0] for item in functions.read_prompt_metadata(value)]), inputs=history_config_choice, outputs=prompt_config_choice)
     prompt_config_choice.change(fn=lambda value: gr.update(open=True), inputs=prompt_config_choice, outputs=history_show_image)
@@ -100,4 +123,4 @@ with sd_lite:
     history_to_transform.click(fn=lambda value: gr.update(value=functions.get_prompt_metadata(value)[0][2]), inputs=prompt_config_choice, outputs=transform_anti_prompt)
 
 sd_lite.queue()
-sd_lite.launch(debug=True)
+sd_lite.launch(debug=True, show_api=False)
