@@ -28,6 +28,7 @@ with sd_lite:
                     explore_anti_prompt = gr.Textbox(label="Negative prompt", show_label=False, lines=1, placeholder="What should the image avoid including?")
                 with gr.Row():
                     explore_alt_prompt = gr.Textbox(label="Alternative prompt", show_label=False, lines=1, placeholder=f"How do you want it styled?")
+                    explore_alt_mode = gr.Dropdown(label="Mode", show_label=False,choices=["delay adding style until 15%", "delay adding style until 30%", "delay adding style until 45%","mirror up:down","mirror left:right","rotate 90","rotate 180"], value="delay adding style until 15%")
                 explore_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
             with gr.Accordion("The text to image method is using Safer Diffusion which aims to supress inappropriate content", open=False):
                 gr.Markdown("After (n_steps*0.1)+1 to allow the composition to form, the model then will steer the image diffusion away from the categories of 'hate, harassment, violence, suffering, humiliation, harm, suicide, sexual, nudity, bodily fluids, blood, obscene gestures, illegal activity, drug use, theft, vandalism, weapons, child abuse, brutality & cruelty.")
@@ -55,20 +56,20 @@ with sd_lite:
                     with gr.Column(scale=2.8):
                         transform_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
             gr.Markdown("The model licence prohibits alterations of copyrighted or licensed material for which you do not have the rights. Read the conditions of the [Open RAIL++-M](https://huggingface.co/stabilityai/stable-diffusion-2/blob/main/LICENSE-MODEL) licence.")
-        with gr.TabItem("Morph"):
+        with gr.TabItem("Hybrid"):
             with gr.Column():
                 with gr.Row():
                     with gr.Column():
-                        morph_prompt = gr.Textbox(label="Prompt", show_label=False, lines=1, placeholder=f"What do you want to use for image A? (press enter to preview)")
-                        morph_prompt_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
+                        hybrid_prompt = gr.Textbox(label="Prompt", show_label=False, lines=1, placeholder=f"What do you want to use for image A? (press enter to preview)")
+                        hybrid_prompt_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
                     with gr.Column():
-                        morph_alt_prompt = gr.Textbox(label="Prompt", show_label=False, lines=1, placeholder=f"What do you want to use for image B? (press enter to preview)")
-                        morph_alt_prompt_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
+                        hybrid_alt_prompt = gr.Textbox(label="Prompt", show_label=False, lines=1, placeholder=f"What do you want to use for image B? (press enter to preview)")
+                        hybrid_alt_prompt_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
                 with gr.Row():
-                    morph_anti_prompt = gr.Textbox(label="Negative prompt (applied to all images)", show_label=True, lines=1, placeholder="What should the images avoid including?")
-                    morph_choice = gr.Dropdown(label="Morph Mode (pick one to start image generation)",choices=["alternating", "increasing B", "decreasing B",  "switch A:B 25%","switch A:B 50%","switch A:B 75%", "delay adding B until 15%", "delay adding B until 30%", "delay adding B until 45%", "weight A:B 75:25", "weight A:B 50:50", "weight A:B 25:75"])
+                    hybrid_anti_prompt = gr.Textbox(label="Negative prompt (applied to all images)", show_label=True, lines=1, placeholder="What should the images avoid including?")
+                    hybrid_alt_mode = gr.Dropdown(label="Morph Mode (pick one to start image generation)",choices=["alternating", "increasing B", "decreasing B",  "switch A:B 25%","switch A:B 50%","switch A:B 75%", "weight A:B 75:25", "weight A:B 50:50", "weight A:B 25:75"])
                 with gr.Column():
-                    morph_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
+                    hybrid_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
         with gr.TabItem("History"):
             with gr.Column():
                 with gr.Row():
@@ -87,28 +88,29 @@ with sd_lite:
                 
             gr.Markdown("The model licence prohibits alterations of copyrighted or licensed material for which you do not have the rights. Read the conditions of the [Open RAIL++-M](https://huggingface.co/stabilityai/stable-diffusion-2/blob/main/LICENSE-MODEL) licence.")
 
-    explore_inputs = [explore_prompt, explore_anti_prompt,explore_alt_prompt]
+    explore_inputs = [explore_prompt, explore_anti_prompt,explore_alt_prompt,explore_alt_mode]
     explore_outputs = [explore_gallery]
     sketch_inputs = [sketch_prompt, sketch_anti_prompt, sketch_image_input]
     sketch_outputs = [sketch_gallery]
     transform_inputs = [transform_prompt, transform_anti_prompt, transform_image_input]
     transform_outputs = [transform_gallery]
-    morph_prompt_inputs = [morph_prompt, morph_anti_prompt]
-    morph_prompt_outputs = [morph_prompt_gallery]
-    morph_alt_prompt_inputs = [morph_alt_prompt, morph_anti_prompt]
-    morph_alt_prompt_outputs = [morph_alt_prompt_gallery]
-    morph_inputs = [morph_prompt, morph_anti_prompt, morph_alt_prompt, morph_choice]
-    morph_outputs = [morph_gallery]
+    hybrid_prompt_inputs = [hybrid_prompt, hybrid_anti_prompt]
+    hybrid_prompt_outputs = [hybrid_prompt_gallery]
+    hybrid_alt_prompt_inputs = [hybrid_alt_prompt, hybrid_anti_prompt]
+    hybrid_alt_prompt_outputs = [hybrid_alt_prompt_gallery]
+    hybrid_inputs = [hybrid_prompt, hybrid_anti_prompt, hybrid_alt_prompt, hybrid_alt_mode]
+    hybrid_outputs = [hybrid_gallery]
     explore_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
     explore_anti_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
     explore_alt_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
+    explore_alt_mode.change(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
     sketch_prompt.submit(functions.img2img_inference, inputs=sketch_inputs, outputs=sketch_outputs)
     sketch_anti_prompt.submit(functions.img2img_inference, inputs=sketch_inputs, outputs=sketch_outputs)
     transform_prompt.submit(functions.depth2img_inference, inputs=transform_inputs, outputs=transform_outputs)
     transform_anti_prompt.submit(functions.depth2img_inference, inputs=transform_inputs, outputs=transform_outputs)
-    morph_prompt.submit(functions.txt2img_inference, inputs=morph_prompt_inputs, outputs=morph_prompt_outputs)
-    morph_alt_prompt.submit(functions.txt2img_inference, inputs=morph_alt_prompt_inputs, outputs=morph_alt_prompt_outputs)
-    morph_choice.change(functions.txt2img_inference, inputs=morph_inputs, outputs=morph_outputs)
+    hybrid_prompt.submit(functions.txt2img_inference, inputs=hybrid_prompt_inputs, outputs=hybrid_prompt_outputs)
+    hybrid_alt_prompt.submit(functions.txt2img_inference, inputs=hybrid_alt_prompt_inputs, outputs=hybrid_alt_prompt_outputs)
+    hybrid_alt_mode.change(functions.txt2img_inference, inputs=hybrid_inputs, outputs=hybrid_outputs)
     history_config_choice.change(fn=lambda value: gr.update(value=functions.read_prompt_metadata(value)), inputs=history_config_choice, outputs=history_prompt_table)
     history_config_choice.change(fn=lambda value: gr.update(choices=[item[0] for item in functions.read_prompt_metadata(value)]), inputs=history_config_choice, outputs=prompt_config_choice)
     prompt_config_choice.change(fn=lambda value: gr.update(open=True), inputs=prompt_config_choice, outputs=history_show_image)

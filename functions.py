@@ -325,7 +325,7 @@ def load_img2img_pipe(loaded_pipe):
               revision="fp16" if config.HALF_PRECISION else "fp32",
               torch_dtype=torch.float16 if config.HALF_PRECISION else torch.float32,
               scheduler=scheduler,
-              safety_checker=None,
+              safety_checker="dummy",
               feature_extractor=None
             ).to("cuda")
 
@@ -355,7 +355,7 @@ def load_depth2img_pipe(loaded_pipe):
         pipe.to("cuda")
         return pipe
 
-def txt2img_inference(explore_prompt="", explore_anti_prompt="", explore_alt_prompt=" ", explore_alt_mode="0.15", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
+def txt2img_inference(prompt="", anti_prompt="", alt_prompt=" ", alt_mode="0.15", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
     if seed == 0:
         seed = random.randint(0, 2147483647)
 
@@ -367,13 +367,8 @@ def txt2img_inference(explore_prompt="", explore_anti_prompt="", explore_alt_pro
         config.depth2img_pipe.to("cpu")
     if config.txt2img_pipe is not None:
         config.txt2img_pipe.to("cuda")
-    if len(explore_prompt)+len(explore_anti_prompt)+len(explore_alt_prompt) > 1:
+    if len(prompt)+len(anti_prompt)+len(alt_prompt) > 1:
         try:
-            prompt = explore_prompt
-            anti_prompt = explore_anti_prompt
-            alt_prompt = explore_alt_prompt
-            alt_mode = explore_alt_mode
-            print("explore")
             return text_to_image_sld(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance, steps, width, height, generator, seed)
         except:
             return None
@@ -488,9 +483,16 @@ def text_to_image_sld(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guid
             continue
 
         # setup image properties
-        temp_guidance = guidance + config.IMAGE_SCALE_OFFSET * settings
-        temp_steps = steps + config.IMAGE_STEPS_OFFSET * settings
+        if alt_mode[:6] == "switch" or alt_mode[:6] == "weight" or alt_mode == "alternating" or alt_mode == "increasing B" or alt_mode == "decreasing B":
+            temp_guidance = guidance-(config.IMAGE_SCALE_OFFSET/2) + (config.IMAGE_SCALE_OFFSET/2) * settings
+            temp_steps = steps-(config.IMAGE_STEPS_OFFSET/2) + (config.IMAGE_STEPS_OFFSET/2) * settings
+        else:
+            temp_guidance = guidance + config.IMAGE_SCALE_OFFSET * settings
+            temp_steps = steps + config.IMAGE_STEPS_OFFSET * settings
         temp_warm_up = int((temp_steps/10)+1)
+
+        if alt_mode == "no delay":
+            alt_mode = -1
         
         if settings == -1:
             temp_prompt = output_name + " " + prompt
@@ -514,7 +516,7 @@ def text_to_image_sld(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guid
             sld_momentum_scale=0.5,
             sld_mom_beta=0.7,
             alt_prompt=alt_prompt,
-            alt_mode= alt_mode #"average" #"0.15"
+            alt_mode= alt_mode #"0.15"
             ).images
         
         result.extend(temp_result)
