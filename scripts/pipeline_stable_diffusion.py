@@ -321,30 +321,31 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
 
             ### AlternativePrompt ###            
             # get alt_prompt text embeddings
-            alt_prompt_input = self.tokenizer(
-                alt_prompt,
-                padding="max_length",
-                max_length=max_length,
-                truncation=True,
-                return_tensors="pt",
-            )
-            
-            if hasattr(self.text_encoder.config, "use_attention_mask") and self.text_encoder.config.use_attention_mask:
-                attention_mask = alt_prompt_input.attention_mask.to(device)
-            else:
-                attention_mask = None            
+            if alt_prompt is not None:
+                alt_prompt_input = self.tokenizer(
+                    alt_prompt,
+                    padding="max_length",
+                    max_length=max_length,
+                    truncation=True,
+                    return_tensors="pt",
+                )
                 
-            alt_prompt_embeddings = self.text_encoder(
-                alt_prompt_input.input_ids.to(device),
-                attention_mask=attention_mask,
-            )
-            alt_prompt_embeddings = alt_prompt_embeddings[0]
+                if hasattr(self.text_encoder.config, "use_attention_mask") and self.text_encoder.config.use_attention_mask:
+                    attention_mask = alt_prompt_input.attention_mask.to(device)
+                else:
+                    attention_mask = None            
+                    
+                alt_prompt_embeddings = self.text_encoder(
+                    alt_prompt_input.input_ids.to(device),
+                    attention_mask=attention_mask,
+                )
+                alt_prompt_embeddings = alt_prompt_embeddings[0]
 
-            # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
-            seq_len = alt_prompt_embeddings.shape[1]
-            alt_prompt_embeddings = alt_prompt_embeddings.repeat(1, num_images_per_prompt, 1)
-            alt_prompt_embeddings = alt_prompt_embeddings.view(batch_size * num_images_per_prompt, seq_len, -1)
-            ### End AlternativePrompt ###   
+                # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
+                seq_len = alt_prompt_embeddings.shape[1]
+                alt_prompt_embeddings = alt_prompt_embeddings.repeat(1, num_images_per_prompt, 1)
+                alt_prompt_embeddings = alt_prompt_embeddings.view(batch_size * num_images_per_prompt, seq_len, -1)
+                ### End AlternativePrompt ###   
             
             ### SaferDiffusion ###
             # Encode the safety concept text
@@ -375,8 +376,11 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
             safety_embeddings = safety_embeddings.repeat(1, num_images_per_prompt, 1)
             safety_embeddings = safety_embeddings.view(batch_size * num_images_per_prompt, seq_len, -1)
 
-            #text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings])
-            text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings, alt_prompt_embeddings])
+            
+            if alt_prompt is None:
+                text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings])
+            else:
+                text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings, alt_prompt_embeddings])
             ### End SaferDiffusion ###
 
             # For classifier free guidance, we need to do two forward passes.
@@ -563,7 +567,9 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
         ### AlternativePrompt ###            
         change_over_step = int(num_inference_steps+1)
         # prepare the switch over for alt_prompt
-        if len(alt_mode) <= 2:
+        if alt_prompt is None:
+            None
+        elif len(alt_mode) <= 2:
             alt_prompt = prompt + ". "+ alt_prompt
             change_over_step = int(num_inference_steps)
         elif len(alt_mode) <= 4:
@@ -582,11 +588,11 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
         elif alt_mode[:6] == "mirror" or alt_mode[:6] == "rotate":
             alt_prompt = prompt + ". "+ alt_prompt
             change_over_step = int(num_inference_steps*0.15)
-        print(change_over_step,alt_prompt, alt_mode)
+        #print(change_over_step,alt_prompt, alt_mode)
         text_embeddings = self._encode_prompt(
             prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt, alt_prompt, alt_mode
         )
-
+        
         # 4. Prepare timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = self.scheduler.timesteps
@@ -630,27 +636,34 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
         OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
         SOFTWARE."""        
         safety_momentum = None
+        latent_multiplier = 3
+        if alt_prompt is not None:
+            latent_multiplier +=1
         ### End SaferDiffusion ###
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 # expand the latents if we are doing classifier free guidance
-                latent_model_input = torch.cat([latents] * 4) if do_classifier_free_guidance else latents
+                latent_model_input = torch.cat([latents] * latent_multiplier) if do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
                 # predict the noise residual
                 noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
-
+                
                 # perform guidance
                 if do_classifier_free_guidance:
                     #noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     #noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
                     ### SaferDiffusion ###
-                    noise_pred_uncond, noise_pred_text,noise_pred_safety_concept, noise_pred_alt_text = noise_pred.chunk(4)
-                    #noise_pred_uncond, noise_pred_text,noise_pred_safety_concept = noise_pred.chunk(3)
+                    if alt_prompt is not None:
+                        noise_pred_uncond, noise_pred_text,noise_pred_safety_concept, noise_pred_alt_text = noise_pred.chunk(4)
+                    else:
+                        noise_pred_uncond, noise_pred_text,noise_pred_safety_concept = noise_pred.chunk(3)
                     
                     ### Alternative Prompt###
-                    if alt_mode == "alternating" and i % 2 > 0:
+                    if alt_prompt is None:
+                        None
+                    elif alt_mode == "alternating" and i % 2 > 0:
                         noise_pred_text = noise_pred_alt_text
                     elif alt_mode == "increasing B":
                         noise_pred_text = (noise_pred_text*((num_inference_steps-i)/num_inference_steps)+noise_pred_alt_text*(i/num_inference_steps))
@@ -658,14 +671,16 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
                         noise_pred_text = (noise_pred_alt_text*((num_inference_steps-i)/num_inference_steps)+noise_pred_text*(i/num_inference_steps))
                     elif alt_mode == "weight":
                         noise_pred_text = (noise_pred_text*(100-change_over_step)/100+noise_pred_alt_text*(change_over_step)/100)
-                    elif alt_prompt is not None and i > change_over_step:
+                    elif i > change_over_step:
                         noise_pred_text = noise_pred_alt_text
                     ### End Alternative Prompt###
 
                     noise_guidance = (noise_pred_text - noise_pred_uncond)
 
                     ### Mirroring and Rotation ###
-                    if alt_mode == 'mirror up:down' and i > change_over_step:# and i % 3 == 0:
+                    if alt_prompt is None:
+                        None
+                    elif alt_mode == 'mirror up:down' and i > change_over_step:# and i % 3 == 0:
                         noise_guidance = torch.flipud(noise_guidance)#, [3])
                     elif alt_mode == 'mirror left:right' and i > change_over_step:# and i % 3 == 0:
                         noise_guidance = torch.fliplr(noise_guidance)#, [2])

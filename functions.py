@@ -377,7 +377,7 @@ def load_depth2img_pipe(loaded_pipe):
         pipe.to("cuda")
         return pipe
 
-def txt2img_inference(prompt="", anti_prompt="", alt_prompt=" ", alt_mode="0.15", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
+def txt2img_inference(prompt="", anti_prompt="", alt_prompt=None, alt_mode="0.15", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
     if seed == 0:
         seed = random.randint(0, 2147483647)
 
@@ -389,11 +389,11 @@ def txt2img_inference(prompt="", anti_prompt="", alt_prompt=" ", alt_mode="0.15"
         config.depth2img_pipe.to("cpu")
     if config.txt2img_pipe is not None:
         config.txt2img_pipe.to("cuda")
-    if len(prompt)+len(anti_prompt)+len(alt_prompt) > 1:
-        try:
-            return text_to_image(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance, steps, width, height, generator, seed)
-        except:
-            return None
+    #if len(prompt)+len(anti_prompt)+len(alt_prompt) > 1:
+    try:
+        return text_to_image(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance, steps, width, height, generator, seed)
+    except:
+        return None
 
 def img2img_inference(sketch_prompt="", sketch_anti_prompt="", sketch_image_input=None, n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
     if seed == 0:
@@ -492,9 +492,6 @@ def text_to_image(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance
     result = []
     file_metadata = []
 
-    if len(alt_prompt) == 0:
-        alt_prompt = " "
-
     if config.txt2img_pipe is None:
         config.txt2img_pipe = load_txt2img_pipe(scheduler)
     
@@ -513,7 +510,7 @@ def text_to_image(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance
         temp_warm_up = int((temp_steps/10)+1)
 
         if alt_mode == "no delay":
-            alt_mode = -1
+            alt_mode = "0.0"
         
         if settings == -1:
             temp_prompt = output_name + " " + prompt
