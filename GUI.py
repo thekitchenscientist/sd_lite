@@ -18,7 +18,7 @@ with sd_lite:
         f"""
           ## Stable Diffusion 2.1
 
-          Press enter after typing in either text box to start the image generation process. The first time you trigger generation on the Sketch or Transform tab it will fail because the model is loading. Once its loaded simply click into a text box again and press enter.
+          Press enter after typing in a text box to start the image generation process. The first time you trigger generation on the Sketch or Transform tab it will fail because the model is loading. Once its loaded simply click into a text box again and press enter.
         """)
     with gr.Tabs():
         with gr.TabItem("Explore"):
@@ -70,6 +70,20 @@ with sd_lite:
                     hybrid_alt_mode = gr.Dropdown(label="Morph Mode (pick one to start image generation)",choices=["alternating", "increasing B", "decreasing B",  "switch A:B 25%","switch A:B 50%","switch A:B 75%", "weight A:B 75:25", "weight A:B 50:50", "weight A:B 25:75"])
                 with gr.Column():
                     hybrid_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
+        with gr.TabItem("Morph"):
+            with gr.Column():
+                with gr.Row():
+                    with gr.Column():
+                        morph_prompt = gr.Textbox(label="Prompt", show_label=False, lines=1, placeholder=f"What do you want to use for image A? (press enter to preview)")
+                        morph_prompt_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
+                    with gr.Column():
+                        morph_alt_prompt = gr.Textbox(label="Prompt", show_label=False, lines=1, placeholder=f"What do you want to use for image B? (press enter to preview)")
+                        morph_alt_prompt_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
+                with gr.Row():
+                    morph_anti_prompt = gr.Textbox(label="Negative prompt (applied to all images)", show_label=True, lines=1, placeholder="What should the images avoid including?")
+                    morph_alt_mode = gr.Dropdown(label="Morph Mode (pick one to start image generation)",choices=["alternating", "increasing B", "decreasing B",  "switch A:B 25%","switch A:B 50%","switch A:B 75%", "weight A:B 75:25", "weight A:B 50:50", "weight A:B 25:75"])
+                with gr.Column():
+                    morph_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
         with gr.TabItem("History"):
             with gr.Column():
                 with gr.Row():
@@ -84,9 +98,7 @@ with sd_lite:
                             history_to_sketch = gr.Button(value="Send Image to Sketch (double click or image will be zoomed-in")
                             history_to_transform = gr.Button(value="Send Image to Transform")
                 history_config_table = gr.DataFrame(CONFIG_HISTORY,  type="numpy", max_rows=5, overflow_row_behaviour="paginate", label="Config Settings", wrap=True, headers=["hash","MODEL","SCHEDULER","WIDTH","HEIGHT","SEED","IMAGE_COUNT","IMAGE_BRACKETING"])  
-                history_prompt_table = gr.DataFrame(PROMPT_HISTORY,  type="numpy", max_rows=10, overflow_row_behaviour="paginate", label="Prompt Settings", wrap=True, headers=["UUID","prompt","anti_prompt","steps","scale","strength","seed"])  
-                
-            gr.Markdown("The model licence prohibits alterations of copyrighted or licensed material for which you do not have the rights. Read the conditions of the [Open RAIL++-M](https://huggingface.co/stabilityai/stable-diffusion-2/blob/main/LICENSE-MODEL) licence.")
+                history_prompt_table = gr.DataFrame(PROMPT_HISTORY,  type="numpy", max_rows=10, overflow_row_behaviour="paginate", label="Prompt Settings", wrap=True, headers=["UUID","prompt","anti_prompt","alt_prompt","mode","steps","scale","strength","seed"])
 
     explore_inputs = [explore_prompt, explore_anti_prompt,explore_alt_prompt,explore_alt_mode]
     explore_outputs = [explore_gallery]
@@ -100,6 +112,12 @@ with sd_lite:
     hybrid_alt_prompt_outputs = [hybrid_alt_prompt_gallery]
     hybrid_inputs = [hybrid_prompt, hybrid_anti_prompt, hybrid_alt_prompt, hybrid_alt_mode]
     hybrid_outputs = [hybrid_gallery]
+    morph_prompt_inputs = [morph_prompt, morph_anti_prompt]
+    morph_prompt_outputs = [morph_prompt_gallery]
+    morph_alt_prompt_inputs = [morph_alt_prompt, morph_anti_prompt]
+    morph_alt_prompt_outputs = [morph_alt_prompt_gallery]
+    morph_inputs = [morph_prompt, morph_anti_prompt, morph_alt_prompt, morph_alt_mode]
+    morph_outputs = [morph_gallery]
     explore_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
     explore_anti_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
     explore_alt_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
@@ -111,6 +129,9 @@ with sd_lite:
     hybrid_prompt.submit(functions.txt2img_inference, inputs=hybrid_prompt_inputs, outputs=hybrid_prompt_outputs)
     hybrid_alt_prompt.submit(functions.txt2img_inference, inputs=hybrid_alt_prompt_inputs, outputs=hybrid_alt_prompt_outputs)
     hybrid_alt_mode.change(functions.txt2img_inference, inputs=hybrid_inputs, outputs=hybrid_outputs)
+    morph_prompt.submit(functions.txt2img_inference, inputs=morph_prompt_inputs, outputs=morph_prompt_outputs)
+    morph_alt_prompt.submit(functions.txt2img_inference, inputs=morph_alt_prompt_inputs, outputs=morph_alt_prompt_outputs)
+    morph_alt_mode.change(functions.txt2img_inference, inputs=morph_inputs, outputs=morph_outputs)
     history_config_choice.change(fn=lambda value: gr.update(value=functions.read_prompt_metadata(value)), inputs=history_config_choice, outputs=history_prompt_table)
     history_config_choice.change(fn=lambda value: gr.update(choices=[item[0] for item in functions.read_prompt_metadata(value)]), inputs=history_config_choice, outputs=prompt_config_choice)
     prompt_config_choice.change(fn=lambda value: gr.update(open=True), inputs=prompt_config_choice, outputs=history_show_image)

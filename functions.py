@@ -1,6 +1,8 @@
-﻿from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline, StableDiffusionDepth2ImgPipeline, DiffusionPipeline, EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler
+﻿from diffusers import DiffusionPipeline, StableDiffusionDepth2ImgPipeline, EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler
 import torch
-from sld import SLDPipeline
+from scripts.pipeline_stable_diffusion import StableDiffusionSaferPipeline
+from scripts.pipeline_stable_diffusion_img2img import StableDiffusionSaferImg2ImgPipeline
+#from scripts.pipeline_stable_diffusion_depth2img import StableDiffusionSaferDepth2ImgPipeline
 from PIL import PngImagePlugin, Image
 import random
 import config
@@ -10,15 +12,12 @@ import uuid
 import hashlib
 import sqlite3
 from sqlite3 import Error
-from omegaconf import OmegaConf
 
 loaded_pipe = config.loaded_pipe
 
 BUFFER_SIZE = 65536 
 # ensure correct folders exist and are used
 ROOT_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__)))
-
-
 
 if config.IMAGE_INPUT_FOLDER is not None:
     if not os.path.isdir(config.IMAGE_INPUT_FOLDER):
@@ -118,6 +117,8 @@ def create_history_database():
                                     scheduler text NOT NULL,
                                     prompt text,
                                     anti_prompt text,
+                                    alt_prompt text,
+                                    alt_mode text,
                                     steps  integer NOT NULL,
                                     scale real NOT NULL,
                                     strength real,
@@ -184,20 +185,22 @@ def add_prompt_metadata(conn, output_name, file_metadata):
     """
     time_stamp = 'today'
     for i in range(0,len(file_metadata)):
-        prompt_metadata_list = (SESSION_ID, output_name+'_'+str(i)+'.'+config.IMAGE_FORMAT, file_metadata[i]["scheduler"],file_metadata[i]["prompt"],file_metadata[i]["negative_prompt"],file_metadata[i]["steps"],file_metadata[i]["scale"],file_metadata[i]["strength"],file_metadata[i]["seed"],file_metadata[i]["n_images"], time_stamp)
+        prompt_metadata_list = (SESSION_ID, output_name+'_'+str(i)+'.'+config.IMAGE_FORMAT, file_metadata[i]["scheduler"],file_metadata[i]["prompt"],file_metadata[i]["negative_prompt"],file_metadata[i]["alt_prompt"],file_metadata[i]["alt_mode"],file_metadata[i]["steps"],file_metadata[i]["scale"],file_metadata[i]["strength"],file_metadata[i]["seed"],file_metadata[i]["n_images"], time_stamp)
      
         sql = ''' INSERT INTO prompts(config_hash,
                                         UUID,
                                         scheduler,
                                         prompt,
                                         anti_prompt,
+                                        alt_prompt,
+                                        alt_mode,
                                         steps,
                                         scale,
                                         strength,
                                         seed,
                                         n_images,
                                         date_time)
-                  VALUES(?,?,?,?,?,?,?,?,?,?,?) '''
+                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) '''
         cur = conn.cursor()
         cur.execute(sql, prompt_metadata_list)
     conn.commit()
@@ -225,9 +228,9 @@ def read_prompt_metadata(config_hash=None, db_file=ROOT_DIR+"/history.db"):
     conn = create_connection(db_file)
     cur = conn.cursor()
     if config_hash is None:
-        cur.execute("SELECT UUID, prompt, anti_prompt, steps, scale, strength, seed FROM prompts")
+        cur.execute("SELECT UUID, prompt, anti_prompt, alt_prompt, alt_mode, steps, scale, strength, seed FROM prompts")
     else:
-        cur.execute("SELECT UUID, prompt, anti_prompt, steps, scale, strength, seed FROM prompts WHERE config_hash=?", (config_hash,))
+        cur.execute("SELECT UUID, prompt, anti_prompt, alt_prompt, alt_mode, steps, scale, strength, seed FROM prompts WHERE config_hash=?", (config_hash,))
     rows = cur.fetchall()
     
     return rows
@@ -241,9 +244,9 @@ def get_prompt_metadata(UUID=None, db_file=ROOT_DIR+"/history.db"):
     conn = create_connection(db_file)
     cur = conn.cursor()
     if UUID is None:
-        cur.execute("SELECT UUID, prompt, anti_prompt, steps, scale, strength, seed FROM prompts")
+        cur.execute("SELECT UUID, prompt, anti_prompt, alt_prompt, alt_mode, steps, scale, strength, seed FROM prompts")
     else:
-        cur.execute("SELECT UUID, prompt, anti_prompt, steps, scale, strength, seed FROM prompts WHERE UUID=?", (UUID,))
+        cur.execute("SELECT UUID, prompt, anti_prompt, alt_prompt, alt_mode, steps, scale, strength, seed FROM prompts WHERE UUID=?", (UUID,))
     rows = cur.fetchall()
 
     return rows
@@ -278,6 +281,25 @@ def check_config_hash_exists(config_hash, config_list):
 
 check_config_hash_exists(SESSION_ID, CONFIG_LIST)
 
+#if no prompts recored add a dummy one
+if len(get_prompt_metadata()) == 0:
+    conn = create_connection(ROOT_DIR+"/history.db")
+    file_metadata = []
+    temp_dict = {}
+    temp_dict["scheduler"] = config.IMAGE_SCHEDULER
+    temp_dict["prompt"] = ""
+    temp_dict["negative_prompt"] = ""
+    temp_dict["alt_prompt"] = ""
+    temp_dict["alt_mode"] = ""
+    temp_dict["steps"] = str(config.IMAGE_STEPS)
+    temp_dict["scale"] = str(config.IMAGE_SCALE)
+    temp_dict["strength"] = str(config.IMAGE_STRENGTH)
+    temp_dict["seed"] = str(config.IMAGE_SEED)
+    temp_dict["n_images"] = str(config.IMAGE_COUNT)
+
+    file_metadata.append(temp_dict)
+    add_prompt_metadata(conn, "Blank", file_metadata)
+
 if config.IMAGE_SCHEDULER == 'EulerAncestralDiscrete':
     scheduler = EulerAncestralDiscreteScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
 else:
@@ -290,14 +312,14 @@ def set_mem_optimizations(pipe):
             pipe.enable_attention_slicing()
 
 
-def load_txt2img_pipe_sld(scheduler):
+def load_txt2img_pipe(scheduler):
 
     if config.loaded_pipe != 'txt2img':
 
-        print("Loading txt2img model into memory... This may take 5 minutes depending on available RAM.")
+        print("Loading safer txt2img model... This may take 1-5 minutes depending on available RAM.")
 
-        pipe = SLDPipeline.from_pretrained(
-            pretrained_model_name_or_path = config.MODEL_ID,
+        pipe = StableDiffusionSaferPipeline.from_pretrained(
+            config.MODEL_ID,
             revision="fp16" if config.HALF_PRECISION else "fp32",
             torch_dtype=torch.float16 if config.HALF_PRECISION else torch.float32,
             scheduler=scheduler,
@@ -311,26 +333,26 @@ def load_txt2img_pipe_sld(scheduler):
         pipe.to("cuda")
         return pipe
 
-            
+       
 
 
 def load_img2img_pipe(loaded_pipe):
 
     if config.loaded_pipe != 'img2img':
         
-        print("Loading img2img model into memory... This may take 5 minutes depending on available RAM.")
+        print("Loading safer img2img model... This may take 1-5 minutes depending on available RAM.")
         
-        config.img2img_pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+        config.img2img_pipe = StableDiffusionSaferImg2ImgPipeline.from_pretrained(
               config.MODEL_ID,
               revision="fp16" if config.HALF_PRECISION else "fp32",
               torch_dtype=torch.float16 if config.HALF_PRECISION else torch.float32,
               scheduler=scheduler,
-              safety_checker="dummy",
+              safety_checker=None,
               feature_extractor=None
             ).to("cuda")
 
+        print("img2img model loaded") 
         config.loaded_pipe = 'img2img'
-        print("img2img model loaded")        
         set_mem_optimizations(pipe)
         pipe.to("cuda")
         return pipe
@@ -340,7 +362,7 @@ def load_depth2img_pipe(loaded_pipe):
 
     if config.loaded_pipe != 'depth2img':
         
-        print("Loading depth2img model into memory... This may take 5 minutes depending on available RAM.")
+        print("Loading depth2img model... This may take 1-5 minutes depending on available RAM.")
         
         config.depth2img_pipe = StableDiffusionDepth2ImgPipeline.from_pretrained(
               config.DEPTH_MODEL_ID,
@@ -369,10 +391,9 @@ def txt2img_inference(prompt="", anti_prompt="", alt_prompt=" ", alt_mode="0.15"
         config.txt2img_pipe.to("cuda")
     if len(prompt)+len(anti_prompt)+len(alt_prompt) > 1:
         try:
-            return text_to_image_sld(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance, steps, width, height, generator, seed)
+            return text_to_image(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance, steps, width, height, generator, seed)
         except:
             return None
-
 
 def img2img_inference(sketch_prompt="", sketch_anti_prompt="", sketch_image_input=None, n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
     if seed == 0:
@@ -425,7 +446,7 @@ def depth2img_inference(transform_prompt="", transform_anti_prompt="", transform
 
     except:
         return None
-
+ 
 def save_images(output_name, result, file_metadata):
     # save images to database
     try:
@@ -465,7 +486,7 @@ def pipe_callback(iter, t, latents):
         #global temp_image_data
         #temp_image_data = image
 
-def text_to_image_sld(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance, steps, width, height, generator, seed):
+def text_to_image(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance, steps, width, height, generator, seed):
 
     output_name = str(uuid.uuid4())
     result = []
@@ -475,7 +496,7 @@ def text_to_image_sld(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guid
         alt_prompt = " "
 
     if config.txt2img_pipe is None:
-        config.txt2img_pipe = load_txt2img_pipe_sld(scheduler)
+        config.txt2img_pipe = load_txt2img_pipe(scheduler)
     
     for settings in range(-1,2):
 
@@ -510,13 +531,8 @@ def text_to_image_sld(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guid
             width = width,
             height = height,
             generator = generator,
-            sld_warmup_steps=temp_warm_up, #7,
-            sld_guidance_scale= 5000,
-            sld_threshold=0.025,
-            sld_momentum_scale=0.5,
-            sld_mom_beta=0.7,
             alt_prompt=alt_prompt,
-            alt_mode= alt_mode #"0.15"
+            alt_mode= alt_mode
             ).images
         
         result.extend(temp_result)
@@ -526,6 +542,8 @@ def text_to_image_sld(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guid
         temp_dict["scheduler"] = config.IMAGE_SCHEDULER
         temp_dict["prompt"] = temp_prompt
         temp_dict["negative_prompt"] = temp_anti_prompt
+        temp_dict["alt_prompt"] = alt_prompt
+        temp_dict["alt_mode"] = alt_mode
         temp_dict["steps"] = str(temp_steps)
         temp_dict["scale"] = str(temp_guidance)
         temp_dict["strength"] = str(-1)
@@ -543,6 +561,7 @@ def text_to_image_sld(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guid
 
         
     return result
+
 
 def image_to_image(prompt, anti_prompt, input_image, strength, n_images, guidance, steps, width, height, generator, seed):
 
@@ -592,6 +611,8 @@ def image_to_image(prompt, anti_prompt, input_image, strength, n_images, guidanc
         temp_dict["scheduler"] = config.IMAGE_SCHEDULER
         temp_dict["prompt"] = temp_prompt
         temp_dict["negative_prompt"] = anti_prompt
+        temp_dict["alt_prompt"] = ""
+        temp_dict["alt_mode"] = ""
         temp_dict["steps"] = str(temp_steps)
         temp_dict["scale"] = str(temp_guidance)
         temp_dict["strength"] = str(temp_strength)
@@ -661,6 +682,8 @@ def depth_to_image(prompt, anti_prompt, input_image, strength, n_images, guidanc
         temp_dict["scheduler"] = config.IMAGE_SCHEDULER
         temp_dict["prompt"] = temp_prompt
         temp_dict["negative_prompt"] = anti_prompt
+        temp_dict["alt_prompt"] = ""
+        temp_dict["alt_mode"] = ""
         temp_dict["steps"] = str(temp_steps)
         temp_dict["scale"] = str(temp_guidance)
         temp_dict["strength"] = str(temp_strength)
