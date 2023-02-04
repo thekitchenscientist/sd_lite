@@ -67,7 +67,7 @@ with sd_lite:
                         hybrid_alt_prompt_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
                 with gr.Row():
                     hybrid_anti_prompt = gr.Textbox(label="Negative prompt (applied to all images)", show_label=True, lines=1, placeholder="What should the images avoid including?")
-                    hybrid_alt_mode = gr.Dropdown(label="Morph Mode (pick one to start image generation)",choices=["alternating", "increasing B", "decreasing B",  "switch A:B 25%","switch A:B 50%","switch A:B 75%", "weight A:B 75:25", "weight A:B 50:50", "weight A:B 25:75"])
+                    hybrid_alt_mode = gr.Dropdown(label="Number of Morph Steps (pick one to start image generation)",choices=["alternating", "increasing B", "decreasing B",  "switch A:B 25%","switch A:B 50%","switch A:B 75%", "weight A:B 75:25", "weight A:B 50:50", "weight A:B 25:75"])
                 with gr.Column():
                     hybrid_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
         with gr.TabItem("Morph"):
@@ -81,9 +81,9 @@ with sd_lite:
                         morph_alt_prompt_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
                 with gr.Row():
                     morph_anti_prompt = gr.Textbox(label="Negative prompt (applied to all images)", show_label=True, lines=1, placeholder="What should the images avoid including?")
-                    morph_alt_mode = gr.Dropdown(label="Morph Mode (pick one to start image generation)",choices=["alternating", "increasing B", "decreasing B",  "switch A:B 25%","switch A:B 50%","switch A:B 75%", "weight A:B 75:25", "weight A:B 50:50", "weight A:B 25:75"])
+                    morph_alt_mode = gr.Dropdown(label="Morph Mode (pick one to start image generation)",choices=[5,10,15,20,30,45,60])
                 with gr.Column():
-                    morph_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
+                    morph_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[5], height="auto")
         with gr.TabItem("History"):
             with gr.Column():
                 with gr.Row():
@@ -129,9 +129,9 @@ with sd_lite:
     hybrid_prompt.submit(functions.txt2img_inference, inputs=hybrid_prompt_inputs, outputs=hybrid_prompt_outputs)
     hybrid_alt_prompt.submit(functions.txt2img_inference, inputs=hybrid_alt_prompt_inputs, outputs=hybrid_alt_prompt_outputs)
     hybrid_alt_mode.change(functions.txt2img_inference, inputs=hybrid_inputs, outputs=hybrid_outputs)
-    morph_prompt.submit(functions.txt2img_inference, inputs=morph_prompt_inputs, outputs=morph_prompt_outputs)
-    morph_alt_prompt.submit(functions.txt2img_inference, inputs=morph_alt_prompt_inputs, outputs=morph_alt_prompt_outputs)
-    morph_alt_mode.change(functions.txt2img_inference, inputs=morph_inputs, outputs=morph_outputs)
+    morph_prompt.submit(functions.walk_inference, inputs=morph_prompt_inputs, outputs=morph_prompt_outputs)
+    morph_alt_prompt.submit(functions.walk_inference, inputs=morph_alt_prompt_inputs, outputs=morph_alt_prompt_outputs)
+    morph_alt_mode.change(functions.walk_inference, inputs=morph_inputs, outputs=morph_outputs)
     history_config_choice.change(fn=lambda value: gr.update(value=functions.read_prompt_metadata(value)), inputs=history_config_choice, outputs=history_prompt_table)
     history_config_choice.change(fn=lambda value: gr.update(choices=[item[0] for item in functions.read_prompt_metadata(value)]), inputs=history_config_choice, outputs=prompt_config_choice)
     prompt_config_choice.change(fn=lambda value: gr.update(open=True), inputs=prompt_config_choice, outputs=history_show_image)

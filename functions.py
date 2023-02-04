@@ -2,6 +2,7 @@
 import torch
 from scripts.pipeline_stable_diffusion import StableDiffusionSaferPipeline
 from scripts.pipeline_stable_diffusion_img2img import StableDiffusionSaferImg2ImgPipeline
+from scripts.pipeline_stable_diffusion_walk import StableDiffusionWalkPipeline
 #from scripts.pipeline_stable_diffusion_depth2img import StableDiffusionSaferDepth2ImgPipeline
 from PIL import PngImagePlugin, Image
 import random
@@ -303,7 +304,7 @@ if len(get_prompt_metadata()) == 0:
 if config.IMAGE_SCHEDULER == 'EulerAncestralDiscrete':
     scheduler = EulerAncestralDiscreteScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
 else:
-    scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler") 
+    scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
 
 def set_mem_optimizations(pipe):
         if config.MEMORY_EFFICIENT_ATTENTION:
@@ -333,7 +334,26 @@ def load_txt2img_pipe(scheduler):
         pipe.to("cuda")
         return pipe
 
-       
+def load_walk_pipe(scheduler):
+
+    if config.loaded_pipe != 'walk':
+
+        print("Loading walk model... This may take 1-5 minutes depending on available RAM.")
+
+        pipe = StableDiffusionWalkPipeline.from_pretrained(
+            config.MODEL_ID,
+            revision="fp16" if config.HALF_PRECISION else "fp32",
+            torch_dtype=torch.float16 if config.HALF_PRECISION else torch.float32,
+            scheduler=scheduler,
+            safety_checker=None,
+            feature_extractor=None
+            ).to("cuda")
+
+        config.loaded_pipe = 'walk'
+        print("walk model loaded")        
+        set_mem_optimizations(pipe)
+        pipe.to("cuda")
+        return pipe       
 
 
 def load_img2img_pipe(loaded_pipe):
@@ -387,6 +407,8 @@ def txt2img_inference(prompt="", anti_prompt="", alt_prompt=None, alt_mode="0.15
         config.img2img_pipe.to("cpu")
     if config.loaded_pipe == 'depth2img':
         config.depth2img_pipe.to("cpu")
+    if config.loaded_pipe == 'walk':
+        config.walk_pipe.to("cpu")
     if config.txt2img_pipe is not None:
         config.txt2img_pipe.to("cuda")
     #if len(prompt)+len(anti_prompt)+len(alt_prompt) > 1:
@@ -394,6 +416,29 @@ def txt2img_inference(prompt="", anti_prompt="", alt_prompt=None, alt_mode="0.15
         return text_to_image(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance, steps, width, height, generator, seed)
     except:
         return None
+
+def walk_inference(prompt="", anti_prompt="", alt_prompt=None, alt_mode=None, n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
+    if seed == 0:
+        seed = random.randint(0, 2147483647)
+
+    generator = torch.Generator('cuda').manual_seed(seed)
+    # Need to use a non-ancestral schedular for the morph effect to work. EulerAncestralDiscrete gives all finished images with no transition effect
+    global scheduler
+    scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
+
+    if config.loaded_pipe == 'txt2img':
+        config.txt2img_pipe.to("cpu")
+    if config.loaded_pipe == 'img2img':
+        config.img2img_pipe.to("cpu")
+    if config.loaded_pipe == 'depth2img':
+        config.depth2img_pipe.to("cpu")
+    if config.walk_pipe is not None:
+        config.walk_pipe.to("cuda")
+
+    try:
+        return text_to_walk(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance, steps, width, height, generator, seed)
+    except:
+        return print("error")
 
 def img2img_inference(sketch_prompt="", sketch_anti_prompt="", sketch_image_input=None, n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
     if seed == 0:
@@ -409,6 +454,8 @@ def img2img_inference(sketch_prompt="", sketch_anti_prompt="", sketch_image_inpu
         config.txt2img_pipe.to("cpu")
     if config.loaded_pipe == 'depth2img':
         config.depth2img_pipe.to("cpu")
+    if config.loaded_pipe == 'walk':
+        config.walk_pipe.to("cpu")
     if config.img2img_pipe is not None:
         config.img2img_pipe.to("cuda")
 
@@ -435,6 +482,8 @@ def depth2img_inference(transform_prompt="", transform_anti_prompt="", transform
         config.txt2img_pipe.to("cpu")
     if config.loaded_pipe == 'img2img':
         config.img2img_pipe.to("cpu")
+    if config.loaded_pipe == 'walk':
+        config.walk_pipe.to("cpu")
     if config.depth2img_pipe is not None:
         config.depth2img_pipe.to("cuda")
 
@@ -559,6 +608,69 @@ def text_to_image(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance
         
     return result
 
+def text_to_walk(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance, steps, width, height, generator, seed):
+
+    output_name = str(uuid.uuid4())
+    result = []
+    file_metadata = []
+
+    if config.walk_pipe is None:
+        config.walk_pipe = load_walk_pipe(scheduler)
+
+    if alt_mode is None:
+       
+        temp_result = config.walk_pipe.walk(
+        [prompt, prompt],
+        [seed, seed],
+        num_interpolation_steps=1,
+        num_inference_steps = int(steps),
+        guidance_scale = guidance,
+        height=width,
+        width=height,
+        batch_size=n_images,
+        negative_prompt = anti_prompt,
+        )
+    else:
+        temp_result = config.walk_pipe.walk(
+        [prompt, alt_prompt],
+        [seed, seed],
+        num_interpolation_steps=int(alt_mode),
+        num_inference_steps = int(steps),
+        guidance_scale = guidance,
+        height=width,
+        width=height,
+        batch_size=n_images,
+        negative_prompt = anti_prompt,
+        )
+    result.extend(temp_result)
+        
+    # record image metadata
+    temp_dict = {}
+    temp_dict["scheduler"] = config.IMAGE_SCHEDULER
+    temp_dict["prompt"] = prompt
+    temp_dict["negative_prompt"] = anti_prompt
+    temp_dict["alt_prompt"] = alt_prompt
+    temp_dict["alt_mode"] = alt_mode
+    temp_dict["steps"] = str(steps)
+    temp_dict["scale"] = str(guidance)
+    temp_dict["strength"] = str(-1)
+    temp_dict["seed"] = str(seed)
+    temp_dict["n_images"] = str(n_images)
+
+    file_metadata.append(copy.deepcopy(temp_dict))
+
+    if n_images > 1:
+        for k in range(1,n_images):
+            file_metadata.append(copy.deepcopy(temp_dict))
+            file_metadata[-1]["seed"] = str(int(file_metadata[-1]["seed"])+k)
+
+    if alt_mode is not None:
+        for k in range(1,int(alt_mode)):
+            file_metadata.append(copy.deepcopy(temp_dict))
+    
+    save_images(output_name, result, file_metadata)
+       
+    return result
 
 def image_to_image(prompt, anti_prompt, input_image, strength, n_images, guidance, steps, width, height, generator, seed):
 
