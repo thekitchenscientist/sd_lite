@@ -28,11 +28,11 @@ The Explore (text to image) and Sketch (image to image) modules makes use of Saf
 The Morph (latent walk) module makes use of stable-diffusion-videos, with the audio/video code removed to just return a series of images.  
 [https://github.com/nateraw/stable-diffusion-videos](https://github.com/nateraw/stable-diffusion-videos)
 
-The Refine(text to image) module makes use of The Stable Artist:  
+The Edit module makes use of instructpix2pix:  
 
-@article{brack2022Stable,  
-      title={The Stable Artist: Steering Semantics in Diffusion Latent Space},   
-      author={Manuel Brack and Patrick Schramowski and Felix Friedrich and Kristian Kersting},  
-      year={2022},   
-      journal={arXiv preprint arXiv:2212.06013}  
-}  
+@InProceedings{brooks2022instructpix2pix,
+    author    = {Brooks, Tim and Holynski, Aleksander and Efros, Alexei A.},
+    title     = {InstructPix2Pix: Learning to Follow Image Editing Instructions},
+    month     = {November},
+    year      = {2022},
+} 
