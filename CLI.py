@@ -26,9 +26,9 @@ def main(args):
 	
 	if args.prompts is not None:		
 		if os.path.exists(args.prompts):
-			prompt_list = open(args.prompts)
+			prompt_list = open(args.prompts, encoding='utf-8-sig')
 		elif os.path.exists(functions.ROOT_DIR+"/prompts/"+args.prompts+".txt"):
-			prompt_list = open(functions.ROOT_DIR+"/prompts/"+args.prompts+".txt")
+			prompt_list = open(functions.ROOT_DIR+"/prompts/"+args.prompts+".txt", encoding='utf-8-sig')
 
 
 	#parse prompt_list
@@ -42,7 +42,7 @@ def main(args):
 
 		print(prompt,anti_prompt)
 
-		functions.txt2img_inference(explore_prompt=prompt, explore_anti_prompt=anti_prompt, n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED)
+		functions.txt2img_inference(prompt=prompt, anti_prompt=anti_prompt, alt_prompt=None, alt_mode="0.15", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED)
 
 
 #parse supplied data

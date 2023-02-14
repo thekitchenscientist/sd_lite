@@ -301,10 +301,6 @@ if len(get_prompt_metadata()) == 0:
     file_metadata.append(temp_dict)
     add_prompt_metadata(conn, "Blank", file_metadata)
 
-if config.IMAGE_SCHEDULER == 'EulerAncestralDiscrete':
-    scheduler = EulerAncestralDiscreteScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
-else:
-    scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
 
 def set_mem_optimizations(pipe):
         if config.MEMORY_EFFICIENT_ATTENTION:
@@ -397,11 +393,37 @@ def load_depth2img_pipe(loaded_pipe):
         pipe.to("cuda")
         return pipe
 
+def load_instructpix2pix_pipe(scheduler):
+
+    if config.loaded_pipe != 'instructpix2pix':
+
+        print("Loading instructpix2pix model... This may take 1-5 minutes depending on available RAM.")
+
+        pipe = StableDiffusionSaferPipeline.from_pretrained(
+            config.EDIT_MODEL_ID,
+            revision="fp16" if config.HALF_PRECISION else "fp32",
+            torch_dtype=torch.float16 if config.HALF_PRECISION else torch.float32,
+            scheduler=scheduler,
+            safety_checker=None,
+            feature_extractor=None
+            ).to("cuda")
+
+        config.loaded_pipe = 'instructpix2pix'
+        print("instructpix2pix model loaded")        
+        set_mem_optimizations(pipe)
+        pipe.to("cuda")
+        return pipe
+
 def txt2img_inference(prompt="", anti_prompt="", alt_prompt=None, alt_mode="0.15", n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
     if seed == 0:
         seed = random.randint(0, 2147483647)
 
     generator = torch.Generator('cuda').manual_seed(seed)
+    global scheduler
+    if config.IMAGE_SCHEDULER == 'EulerAncestralDiscrete':
+        scheduler = EulerAncestralDiscreteScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
+    else:
+        scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
 
     if config.loaded_pipe == 'img2img':
         config.img2img_pipe.to("cpu")
@@ -424,7 +446,10 @@ def walk_inference(prompt="", anti_prompt="", alt_prompt=None, alt_mode=None, n_
     generator = torch.Generator('cuda').manual_seed(seed)
     # Need to use a non-ancestral schedular for the morph effect to work. EulerAncestralDiscrete gives all finished images with no transition effect
     global scheduler
-    scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
+    if alt_mode is not None and alt_mode[:-8]== "coherent":
+        scheduler = EulerAncestralDiscreteScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
+    else:
+        scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
 
     if config.loaded_pipe == 'txt2img':
         config.txt2img_pipe.to("cpu")
@@ -434,6 +459,9 @@ def walk_inference(prompt="", anti_prompt="", alt_prompt=None, alt_mode=None, n_
         config.depth2img_pipe.to("cpu")
     if config.walk_pipe is not None:
         config.walk_pipe.to("cuda")
+    
+    if alt_mode is not None:
+        alt_mode = int(alt_mode[:2])
 
     try:
         return text_to_walk(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance, steps, width, height, generator, seed)
@@ -445,6 +473,11 @@ def img2img_inference(sketch_prompt="", sketch_anti_prompt="", sketch_image_inpu
         seed = random.randint(0, 2147483647)
 
     generator = torch.Generator('cuda').manual_seed(seed)
+    global scheduler
+    if config.IMAGE_SCHEDULER == 'EulerAncestralDiscrete':
+        scheduler = EulerAncestralDiscreteScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
+    else:
+        scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
 
     if sketch_image_input is None:
         print('Error, no input image provided')
@@ -473,6 +506,11 @@ def depth2img_inference(transform_prompt="", transform_anti_prompt="", transform
         seed = random.randint(0, 2147483647)
 
     generator = torch.Generator('cuda').manual_seed(seed)
+    global scheduler
+    if config.IMAGE_SCHEDULER == 'EulerAncestralDiscrete':
+        scheduler = EulerAncestralDiscreteScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
+    else:
+        scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
 
     if transform_image_input is None:
         print('Error, no input image provided')
@@ -496,6 +534,36 @@ def depth2img_inference(transform_prompt="", transform_anti_prompt="", transform
     except:
         return None
  
+def instructpix2pix_inference(prompt="", anti_prompt="", image_input=None, n_images = config.IMAGE_COUNT, guidance = config.IMAGE_SCALE, steps = config.IMAGE_STEPS, width= config.IMAGE_WIDTH, height= config.IMAGE_HEIGHT, seed= config.IMAGE_SEED, strength=config.IMAGE_STRENGTH):
+    if seed == 0:
+        seed = random.randint(0, 2147483647)
+
+    generator = torch.Generator('cuda').manual_seed(seed)
+    global scheduler
+    if config.IMAGE_SCHEDULER == 'EulerAncestralDiscrete':
+        scheduler = EulerAncestralDiscreteScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
+    else:
+        scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
+
+    if transform_image_input is None:
+        print('Error, no input image provided')
+        return None
+
+    if config.loaded_pipe == 'txt2img':
+        config.txt2img_pipe.to("cpu")
+    if config.loaded_pipe == 'img2img':
+        config.img2img_pipe.to("cpu")
+    if config.loaded_pipe == 'walk':
+        config.walk_pipe.to("cpu")
+    if config.instructpix2pix_pipe is not None:
+        config.instructpix2pix_pipe.to("cuda")
+
+    try:
+        return instructpix2pix(prompt, anti_prompt, input_image, strength, n_images, guidance, steps, width, height, generator, seed)
+
+    except:
+        return None
+
 def save_images(output_name, result, file_metadata):
     # save images to database
     try:

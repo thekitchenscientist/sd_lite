@@ -16,6 +16,9 @@ import inspect
 from typing import Callable, List, Optional, Union
 
 import torch
+torch.backends.cudnn.benchmark = True
+
+import math
 
 from diffusers.utils import is_accelerate_available
 from packaging import version
@@ -636,10 +639,65 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
         OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
         SOFTWARE."""        
         safety_momentum = None
+        sld_guidance_scale = 5000
+        sld_warmup_steps = num_inference_steps*0.1+1
+        sld_threshold = 0.01
+        sld_momentum_scale = 0.5
+        sld_mom_beta = 0.7
+        
         latent_multiplier = 3
         if alt_prompt is not None:
             latent_multiplier +=1
         ### End SaferDiffusion ###
+
+        ### Start Dynamic Threshold ###          
+        guidance_list = []
+        guidance_scale_mimic = 7
+        threshold_percentile = 0.975
+         
+        if guidance_scale >=9:
+            minimum_guidance_scale_mimic = 5
+            guidance_scale_mode = "Power Up"
+            power_val = 2           
+        elif guidance_scale <=5:
+            minimum_guidance_scale_mimic = guidance_scale
+            guidance_scale_mode = "Half Cosine Up"
+            power_val = 6
+            guidance_scale = guidance_scale*3            
+        else:
+            minimum_guidance_scale_mimic = 7
+            guidance_scale_mode = "Constant"
+            power_val = 1
+
+
+        def interpretScale(step, scale, mode, min):
+            scale -= min
+            max = num_inference_steps - 1
+            if mode == "Constant":
+                pass
+            elif mode == "Linear Down":
+                scale *= 1.0 - (step / max)
+            elif mode == "Half Cosine Down":
+                scale *= math.cos((step / max))
+            elif mode == "Cosine Down":
+                scale *= math.cos((step / max) * 1.5707)
+            elif mode == "Linear Up":
+                scale *= self.step / max
+            elif mode == "Half Cosine Up":
+                scale *= 1.0 - math.cos((step / max))
+            elif mode == "Cosine Up":
+                scale *= 1.0 - math.cos((step / max) * 1.5707)
+            elif mode == "Power Up":
+                scale *= math.pow(step / max, power_val)
+            scale += min
+            return round(scale,3)
+            
+        for i in range (0,num_inference_steps):
+            scale = interpretScale(i, guidance_scale, guidance_scale_mode, minimum_guidance_scale_mimic)
+            guidance_list.extend([scale]) 
+        #print(guidance_list)
+        ### End Dynamic Threshold ###
+        
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
@@ -690,11 +748,7 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
                         noise_guidance = torch.rot90(torch.rot90(noise_guidance, dims=[2, 3]),dims=[2, 3])
                     ### End Mirroring and Rotation ###
 
-                    sld_guidance_scale = 5000
-                    sld_warmup_steps = 0 #num_inference_steps*0.1+1
-                    sld_threshold = 0.01
-                    sld_momentum_scale = 0.5
-                    sld_mom_beta = 0.7
+
                     if safety_momentum is None:
                         safety_momentum = torch.zeros_like(noise_guidance)
                     #noise_pred_safety_concept = noise_pred_out[2]
@@ -721,9 +775,12 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
                     if i >= sld_warmup_steps: # Warmup
                         # Equation 3
                         noise_guidance = noise_guidance - noise_guidance_safety
-
-                    noise_pred = noise_pred_uncond + guidance_scale * noise_guidance
                     ### End SaferDiffusion ###
+                    ### Start Dynamic Threshold ###
+                    guidance_scale = guidance_list[i]
+                    noise_pred = noise_pred_uncond + guidance_scale * noise_guidance
+
+
                     
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
