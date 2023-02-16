@@ -650,53 +650,50 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
             latent_multiplier +=1
         ### End SaferDiffusion ###
 
-        ### Start Dynamic Threshold ###          
+        ### Start Dynamic Scale ###
+        """The MIT License (MIT)
+
+        Copyright (c) 2023 Alex "mcmonkey" Goodwin
+
+        Permission is hereby granted, free of charge, to any person obtaining a copy
+        of this software and associated documentation files (the "Software"), to deal
+        in the Software without restriction, including without limitation the rights
+        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        copies of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+
+        The above copyright notice and this permission notice shall be included in all
+        copies or substantial portions of the Software.
+
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+        SOFTWARE."""
+        guidance_scale_mimic = 7  
+        threshold_percentile = 0.9        
         guidance_list = []
-        guidance_scale_mimic = 7
-        threshold_percentile = 0.975
-         
-        if guidance_scale >=9:
-            minimum_guidance_scale_mimic = 5
-            guidance_scale_mode = "Power Up"
-            power_val = 2           
-        elif guidance_scale <=5:
-            minimum_guidance_scale_mimic = guidance_scale
-            guidance_scale_mode = "Half Cosine Up"
-            power_val = 6
-            guidance_scale = guidance_scale*3            
-        else:
-            minimum_guidance_scale_mimic = 7
-            guidance_scale_mode = "Constant"
-            power_val = 1
+        power_val = 2
 
-
-        def interpretScale(step, scale, mode, min):
+        def modify_scale(step, min, scale=guidance_scale):
             scale -= min
             max = num_inference_steps - 1
-            if mode == "Constant":
-                pass
-            elif mode == "Linear Down":
-                scale *= 1.0 - (step / max)
-            elif mode == "Half Cosine Down":
-                scale *= math.cos((step / max))
-            elif mode == "Cosine Down":
-                scale *= math.cos((step / max) * 1.5707)
-            elif mode == "Linear Up":
-                scale *= self.step / max
-            elif mode == "Half Cosine Up":
-                scale *= 1.0 - math.cos((step / max))
-            elif mode == "Cosine Up":
-                scale *= 1.0 - math.cos((step / max) * 1.5707)
-            elif mode == "Power Up":
-                scale *= math.pow(step / max, power_val)
+            scale *= math.pow(step / max, power_val)
             scale += min
             return round(scale,3)
             
         for i in range (0,num_inference_steps):
-            scale = interpretScale(i, guidance_scale, guidance_scale_mode, minimum_guidance_scale_mimic)
-            guidance_list.extend([scale]) 
-        #print(guidance_list)
-        ### End Dynamic Threshold ###
+            if guidance_scale >=9:
+                modified_scale = modify_scale(i, 5)          
+            elif guidance_scale <=5:
+                modified_scale = modify_scale(i, guidance_scale, guidance_scale*1.5)            
+            else: 
+                modified_scale = modify_scale(i, guidance_scale-1, guidance_scale+1)
+            guidance_list.extend([modified_scale]) 
+
+        ### End Dynamic Scale ###
         
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         with self.progress_bar(total=num_inference_steps) as progress_bar:
@@ -776,12 +773,41 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
                         # Equation 3
                         noise_guidance = noise_guidance - noise_guidance_safety
                     ### End SaferDiffusion ###
-                    ### Start Dynamic Threshold ###
+                    ### Start Dynamic Scale ###                    
                     guidance_scale = guidance_list[i]
                     noise_pred = noise_pred_uncond + guidance_scale * noise_guidance
+                    noise_pred_mimic = noise_pred_uncond + guidance_scale_mimic * noise_guidance
+                    ### If we weren't doing mimic scale, we'd just return noise_pred here
 
+                    ### Now recenter the values relative to their average rather than absolute, to allow scaling from average
+                    mim_flattened = noise_pred_mimic.flatten(2)
+                    cfg_flattened = noise_pred.flatten(2)
+                    mim_means = mim_flattened.mean(dim=2).unsqueeze(2)
+                    cfg_means = cfg_flattened.mean(dim=2).unsqueeze(2)
+                    mim_centered = mim_flattened - mim_means
+                    cfg_centered = cfg_flattened - cfg_means
 
-                    
+                    ### Get the maximum value of all datapoints (with an optional threshold percentile on the uncond)
+                    mim_max = mim_centered.abs().max(dim=2).values.unsqueeze(2)
+                    orig_dtype = cfg_centered.dtype
+                    if orig_dtype not in [torch.float, torch.double]:
+                        cfg_centered = cfg_centered.float()
+                    cfg_max = torch.quantile(cfg_centered.abs(), threshold_percentile, dim=2).unsqueeze(2)
+                    actualMax = torch.maximum(cfg_max, mim_max)
+
+                    ### Clamp to the max
+                    cfg_centered = cfg_centered.type(orig_dtype)
+                    cfg_clamped = cfg_centered.clamp(-actualMax, actualMax)
+                    ### Now shrink from the max to normalize and grow to the mimic scale (instead of the CFG scale)
+                    cfg_renormalized = (cfg_clamped / actualMax) * mim_max
+
+                    ### Now add it back onto the averages to get into real scale again and return
+                    result = cfg_renormalized + cfg_means
+                    noise_pred = result.unflatten(2, noise_pred_mimic.shape[2:])
+                    if orig_dtype not in [torch.float, torch.double]:
+                        noise_pred = noise_pred.to(torch.float16)
+                    ### End Dynamic Scale ###
+
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
 
