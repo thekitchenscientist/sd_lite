@@ -19,6 +19,7 @@ import torch
 torch.backends.cudnn.benchmark = True
 
 import math
+import numpy as np
 
 from diffusers.utils import is_accelerate_available
 from packaging import version
@@ -42,8 +43,43 @@ from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionS
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+### Start Panorama Diffusion ###
+# Copyright 2023 MultiDiffusion Authors. All rights reserved."
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-class StableDiffusionSaferPipeline(DiffusionPipeline):
+def get_views(panorama_height, panorama_width, window_size=64, stride=8):
+    panorama_height /= 8
+    panorama_width /= 8
+    num_blocks_height = (panorama_height - window_size) // stride + 1
+    num_blocks_width = (panorama_width - window_size) // stride + 1
+    total_num_blocks = int(num_blocks_height * num_blocks_width)
+    views = []
+    for i in range(total_num_blocks):
+        h_start = int((i // num_blocks_width) * stride)
+        h_end = h_start + window_size
+        w_start = int((i % num_blocks_width) * stride)
+        w_end = w_start + window_size
+        views.append((h_start, h_end, w_start, w_end))
+    return views
+### End Panorama Diffusion ###
+
+def sigmoid(x):
+  y = np.zeros(len(x))
+  for i in range(len(x)):
+    y[i] = 1 / (1 + math.exp(-x[i]))
+  return y
+
+class StableDiffusionMultiPipeline(DiffusionPipeline):
     r"""
     Pipeline for text-to-image generation using Stable Diffusion.
 
@@ -224,7 +260,7 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
 
-    def _encode_prompt(self, prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt, alt_prompt, alt_mode):
+    def _encode_prompt(self, prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt, alt_prompt, alt_mode,nudge_text_concept):
         r"""
         Encodes the prompt into text encoder hidden states.
 
@@ -351,39 +387,46 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
                 ### End AlternativePrompt ###   
             
             ### SaferDiffusion ###
-            # Encode the safety concept text
-            safety_text_concept = 'hate, harassment, violence, suffering, humiliation, harm, suicide, ' \
-                                    'sexual, nudity, bodily fluids, blood, obscene gestures, illegal activity, ' \
-                                    'drug use, theft, vandalism, weapons, child abuse, brutality, cruelty'
-            safety_concept_input = self.tokenizer(
-                [safety_text_concept],
-                padding="max_length",
-                max_length=max_length,
-                truncation=True,
-                return_tensors="pt",
-            )
+            if nudge_text_concept is not None:
+                # Encode the safety concept text
+                #nudge_text_concept = 'hate, harassment, violence, suffering, humiliation, harm, suicide, ' \
+                #                        'sexual, nudity, bodily fluids, blood, obscene gestures, illegal activity, ' \
+                #                        'drug use, theft, vandalism, weapons, child abuse, brutality, cruelty'
+                safety_concept_input = self.tokenizer(
+                    [nudge_text_concept],
+                    padding="max_length",
+                    max_length=max_length,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                    
+                if hasattr(self.text_encoder.config, "use_attention_mask") and self.text_encoder.config.use_attention_mask:
+                    attention_mask = safety_concept_input.attention_mask.to(device)
+                else:
+                    attention_mask = None
+
+                safety_embeddings = self.text_encoder(
+                    safety_concept_input.input_ids.to(device),
+                    attention_mask=attention_mask,
+                )
+                safety_embeddings = safety_embeddings[0]
                 
-            if hasattr(self.text_encoder.config, "use_attention_mask") and self.text_encoder.config.use_attention_mask:
-                attention_mask = safety_concept_input.attention_mask.to(device)
-            else:
-                attention_mask = None
-
-            safety_embeddings = self.text_encoder(
-                safety_concept_input.input_ids.to(device),
-                attention_mask=attention_mask,
-            )
-            safety_embeddings = safety_embeddings[0]
-            
-            # duplicate safety embeddings for each generation per prompt, using mps friendly method
-            seq_len = safety_embeddings.shape[1]
-            safety_embeddings = safety_embeddings.repeat(1, num_images_per_prompt, 1)
-            safety_embeddings = safety_embeddings.view(batch_size * num_images_per_prompt, seq_len, -1)
+                # duplicate safety embeddings for each generation per prompt, using mps friendly method
+                seq_len = safety_embeddings.shape[1]
+                safety_embeddings = safety_embeddings.repeat(1, num_images_per_prompt, 1)
+                safety_embeddings = safety_embeddings.view(batch_size * num_images_per_prompt, seq_len, -1)
 
             
-            if alt_prompt is None:
+            if alt_mode == "panorama" and alt_prompt is None:
+                text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
+            elif alt_mode == "panorama" and alt_prompt is not None:
+                text_embeddings = torch.cat([uncond_embeddings, text_embeddings, alt_prompt_embeddings])          
+            elif alt_prompt is None and nudge_text_concept is not None:
                 text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings])
-            else:
+            elif alt_prompt is not None and nudge_text_concept is not None:
                 text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings, alt_prompt_embeddings])
+            else:
+                text_embeddings = torch.cat([uncond_embeddings, text_embeddings])    
             ### End SaferDiffusion ###
 
             # For classifier free guidance, we need to do two forward passes.
@@ -491,6 +534,7 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
         callback_steps: Optional[int] = 1,
         alt_prompt: Optional[Union[str, List[str]]] = None,
         alt_mode: Optional[str] = "0.15",
+        nudge_text_concept: Optional[str] = 'hate, harassment, violence, suffering, humiliation, harm, suicide, sexual, nudity, bodily fluids, blood, obscene gestures, illegal activity, drug use, theft, vandalism, weapons, child abuse, brutality, cruelty'
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -540,8 +584,10 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
                 called at every step.
             alt_prompt  (`str` or `List[str]`, *optional*):
                 An additonal noise channel to guide the image creation.
-            alt_mode  (`float`, *optional*, defaults to 0.15):
+            alt_mode  (`str`, *optional*, defaults to "0.15"):
                 How the additonal noise channel should be used.
+            nudge_text_concept (`str`, *optional*, defaults to "harms identified by research")
+                Nude the generation away from the listed concepts. Requires in be active for at least 15 steps to be fully effective
             
 
         Returns:
@@ -593,7 +639,7 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
             change_over_step = int(num_inference_steps*0.15)
         #print(change_over_step,alt_prompt, alt_mode)
         text_embeddings = self._encode_prompt(
-            prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt, alt_prompt, alt_mode
+            prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt, alt_prompt, alt_mode, nudge_text_concept
         )
         
         # 4. Prepare timesteps
@@ -640,7 +686,7 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
         SOFTWARE."""        
         safety_momentum = None
         sld_guidance_scale = 5000
-        sld_warmup_steps = num_inference_steps*0.1+1
+        sld_warmup_steps = 2#num_inference_steps+1
         sld_threshold = 0.01
         sld_momentum_scale = 0.5
         sld_mom_beta = 0.7
@@ -695,130 +741,313 @@ class StableDiffusionSaferPipeline(DiffusionPipeline):
 
         ### End Dynamic Scale ###
         
-        num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
-        with self.progress_bar(total=num_inference_steps) as progress_bar:
-            for i, t in enumerate(timesteps):
-                # expand the latents if we are doing classifier free guidance
-                latent_model_input = torch.cat([latents] * latent_multiplier) if do_classifier_free_guidance else latents
-                latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
-
-                # predict the noise residual
-                noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
-                
-                # perform guidance
-                if do_classifier_free_guidance:
-                    #noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    #noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-                    ### SaferDiffusion ###
-                    if alt_prompt is not None:
-                        noise_pred_uncond, noise_pred_text,noise_pred_safety_concept, noise_pred_alt_text = noise_pred.chunk(4)
-                    else:
-                        noise_pred_uncond, noise_pred_text,noise_pred_safety_concept = noise_pred.chunk(3)
+        latent_multiplier = 2
+        if alt_mode != "panorama" and nudge_text_concept is not None:
+            latent_multiplier +=1
+        if alt_prompt is not None:
+            latent_multiplier +=1        
+        
+        
+        ### Start Panorama Diffusion ###
+        if alt_mode == "panorama":
+            views = get_views(height, width)
+            count = torch.zeros_like(latents)
+            value = torch.zeros_like(latents)
+            prompt_weight_list = []
+            number_slices = len(views)
+            start_slice = int(number_slices/5)
+            start_mid_slice = int(number_slices/3)
+            end_mid_slice = int(number_slices - number_slices/3)
+            end_slice = int(number_slices - number_slices/5)
+            mid_range=end_slice-start_slice
+            for i in range(number_slices):
+                if i < start_mid_slice:
+                    prompt_weight_list.append(1)
+                elif i>= start_slice and i <= end_slice:
+                    offset = i-start_slice
+                    prompt_weight_list.append(1-(offset/mid_range))
+                elif i> end_slice:
+                    prompt_weight_list.append(0)
+                else:
+                    prompt_weight_list.append((number_slices-i)/number_slices)
                     
-                    ### Alternative Prompt###
-                    if alt_prompt is None:
-                        None
-                    elif alt_mode == "alternating" and i % 2 > 0:
-                        noise_pred_text = noise_pred_alt_text
-                    elif alt_mode == "increasing B":
-                        noise_pred_text = (noise_pred_text*((num_inference_steps-i)/num_inference_steps)+noise_pred_alt_text*(i/num_inference_steps))
-                    elif alt_mode == "decreasing B":
-                        noise_pred_text = (noise_pred_alt_text*((num_inference_steps-i)/num_inference_steps)+noise_pred_text*(i/num_inference_steps))
-                    elif alt_mode == "weight":
-                        noise_pred_text = (noise_pred_text*(100-change_over_step)/100+noise_pred_alt_text*(change_over_step)/100)
-                    elif i > change_over_step:
-                        noise_pred_text = noise_pred_alt_text
-                    ### End Alternative Prompt###
+            num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+            with self.progress_bar(total=num_inference_steps) as progress_bar:
+                for i, t in enumerate(timesteps):
+                    count.zero_()
+                    value.zero_()
+                    #print(i)
+                    slice_count = 0
+                    for h_start, h_end, w_start, w_end in views:
+                        
+                        # TODO we can support batches, and pass multiple views at once to the unet
+                        latent_view = latents[:, :, h_start:h_end, w_start:w_end]
+                        
+                        # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes.
+                        latent_model_input = torch.cat([latent_view] * latent_multiplier)
+                        latent_model_input = latent_model_input.to(torch.float16)
+                        # predict the noise residual
+                        noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
 
-                    noise_guidance = (noise_pred_text - noise_pred_uncond)
+                        # perform guidance
+                        if alt_prompt is not None:
+                            noise_pred_uncond, noise_pred_text, noise_pred_alt_text = noise_pred.chunk(3)
+                            noise_pred_text = noise_pred_text*(prompt_weight_list[slice_count])+noise_pred_alt_text*(1-prompt_weight_list[slice_count])
+                        else:
+                            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                        noise_pred = noise_pred_text + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-                    ### Mirroring and Rotation ###
-                    if alt_prompt is None:
-                        None
-                    elif alt_mode == 'mirror up:down' and i > change_over_step:# and i % 3 == 0:
-                        noise_guidance = torch.flipud(noise_guidance)#, [3])
-                    elif alt_mode == 'mirror left:right' and i > change_over_step:# and i % 3 == 0:
-                        noise_guidance = torch.fliplr(noise_guidance)#, [2])
-                    elif alt_mode == 'rotate 90' and i > change_over_step:# and i % 3 == 0:
-                        noise_guidance = torch.rot90(noise_guidance, dims=[2, 3])
-                    elif alt_mode == 'rotate 180' and i > change_over_step:# and i % 3 == 0:
-                        noise_guidance = torch.rot90(torch.rot90(noise_guidance, dims=[2, 3]),dims=[2, 3])
-                    ### End Mirroring and Rotation ###
+                        # compute the denoising step with the reference model
+                        latents_view_denoised = self.scheduler.step(noise_pred, t, latent_view).prev_sample
+                        value[:, :, h_start:h_end, w_start:w_end] += latents_view_denoised
+                        count[:, :, h_start:h_end, w_start:w_end] += 1
+                        slice_count += 1
+
+                    # take the MultiDiffusion step
+                    latents = torch.where(count > 0, value / count, value)
+
+                    # call the callback, if provided
+                    if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
+                        progress_bar.update()
+                        if callback is not None and i % callback_steps == 0:
+                            callback(i, t, latents)
+        ### End Panorama Diffusion ###
+        else:
+            num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+            with self.progress_bar(total=num_inference_steps) as progress_bar:
+                for i, t in enumerate(timesteps):
+                    # expand the latents if we are doing classifier free guidance
+                    latent_model_input = torch.cat([latents] * latent_multiplier) if do_classifier_free_guidance else latents
+                    latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+
+                    # predict the noise residual
+                    noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
+                    
+                    # perform guidance
+                    if do_classifier_free_guidance:
+                        #noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                        #noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                        ### SaferDiffusion ###
+                        if alt_prompt is not None:
+                            noise_pred_uncond, noise_pred_text,noise_pred_safety_concept, noise_pred_alt_text = noise_pred.chunk(4)
+                        else:
+                            noise_pred_uncond, noise_pred_text,noise_pred_safety_concept = noise_pred.chunk(3)
+                        
+                        ### Alternative Prompt###
+                        if alt_prompt is None:
+                            None
+                        elif alt_mode == "alternating" and i % 2 > 0:
+                            noise_pred_text = noise_pred_alt_text
+                        elif alt_mode == "increasing B":
+                            noise_pred_text = (noise_pred_text*((num_inference_steps-i)/num_inference_steps)+noise_pred_alt_text*(i/num_inference_steps))
+                        elif alt_mode == "decreasing B":
+                            noise_pred_text = (noise_pred_alt_text*((num_inference_steps-i)/num_inference_steps)+noise_pred_text*(i/num_inference_steps))
+                        elif alt_mode == "weight":
+                            noise_pred_text = (noise_pred_text*(100-change_over_step)/100+noise_pred_alt_text*(change_over_step)/100)
+                        elif i > change_over_step:
+                            noise_pred_text = noise_pred_alt_text
+                        ### End Alternative Prompt###
+
+                        noise_guidance = (noise_pred_text - noise_pred_uncond)
+
+                        ### Mirroring and Rotation ###
+                        if alt_prompt is None:
+                            None
+                        elif alt_mode == 'mirror up:down' and i > change_over_step:# and i % 3 == 0:
+                            noise_guidance = torch.flipud(noise_guidance)#, [3])
+                        elif alt_mode == 'mirror left:right' and i > change_over_step:# and i % 3 == 0:
+                            noise_guidance = torch.fliplr(noise_guidance)#, [2])
+                        elif alt_mode == 'rotate 90' and i > change_over_step:# and i % 3 == 0:
+                            noise_guidance = torch.rot90(noise_guidance, dims=[2, 3])
+                        elif alt_mode == 'rotate 180' and i > change_over_step:# and i % 3 == 0:
+                            noise_guidance = torch.rot90(torch.rot90(noise_guidance, dims=[2, 3]),dims=[2, 3])
+                        ### End Mirroring and Rotation ###
 
 
-                    if safety_momentum is None:
-                        safety_momentum = torch.zeros_like(noise_guidance)
-                    #noise_pred_safety_concept = noise_pred_out[2]
+                        if safety_momentum is None:
+                            safety_momentum = torch.zeros_like(noise_guidance)
+                        #noise_pred_safety_concept = noise_pred_out[2]
 
-                    # Equation 6
-                    scale = torch.clamp(
-                        torch.abs((noise_pred_text - noise_pred_safety_concept)) * sld_guidance_scale, max=1.)
+                        # Equation 6
+                        scale = torch.clamp(
+                            torch.abs((noise_pred_text - noise_pred_safety_concept)) * sld_guidance_scale, max=1.)
 
-                    # Equation 6
-                    safety_concept_scale = torch.where(
-                        (noise_pred_text - noise_pred_safety_concept) >= sld_threshold,
-                        torch.zeros_like(scale), scale)
+                        # Equation 6
+                        safety_concept_scale = torch.where(
+                            (noise_pred_text - noise_pred_safety_concept) >= sld_threshold,
+                            torch.zeros_like(scale), scale)
 
-                    # Equation 4
-                    noise_guidance_safety = torch.mul(
-                        (noise_pred_safety_concept - noise_pred_uncond), safety_concept_scale)
+                        # Equation 4
+                        noise_guidance_safety = torch.mul(
+                            (noise_pred_safety_concept - noise_pred_uncond), safety_concept_scale)
 
-                    # Equation 7
-                    noise_guidance_safety = noise_guidance_safety + sld_momentum_scale * safety_momentum
+                        # Equation 7
+                        noise_guidance_safety = noise_guidance_safety + sld_momentum_scale * safety_momentum
 
-                    # Equation 8
-                    safety_momentum = sld_mom_beta * safety_momentum + (1 - sld_mom_beta) * noise_guidance_safety
+                        # Equation 8
+                        safety_momentum = sld_mom_beta * safety_momentum + (1 - sld_mom_beta) * noise_guidance_safety
 
-                    if i >= sld_warmup_steps: # Warmup
-                        # Equation 3
-                        noise_guidance = noise_guidance - noise_guidance_safety
-                    ### End SaferDiffusion ###
-                    ### Start Dynamic Scale ###                    
-                    guidance_scale = guidance_list[i]
-                    noise_pred = noise_pred_uncond + guidance_scale * noise_guidance
-                    noise_pred_mimic = noise_pred_uncond + guidance_scale_mimic * noise_guidance
-                    ### If we weren't doing mimic scale, we'd just return noise_pred here
+                        if i >= sld_warmup_steps: # Warmup
+                            # Equation 3
+                            noise_guidance = noise_guidance - noise_guidance_safety
+                        ### End SaferDiffusion ###
+                        ### Start Dynamic Scale ###                    
+                        guidance_scale = guidance_list[i]
+                        noise_pred = noise_pred_uncond + guidance_scale * noise_guidance
+                        noise_pred_mimic = noise_pred_uncond + guidance_scale_mimic * noise_guidance
+                        ### If we weren't doing mimic scale, we'd just return noise_pred here
 
-                    ### Now recenter the values relative to their average rather than absolute, to allow scaling from average
-                    mim_flattened = noise_pred_mimic.flatten(2)
-                    cfg_flattened = noise_pred.flatten(2)
-                    mim_means = mim_flattened.mean(dim=2).unsqueeze(2)
-                    cfg_means = cfg_flattened.mean(dim=2).unsqueeze(2)
-                    mim_centered = mim_flattened - mim_means
-                    cfg_centered = cfg_flattened - cfg_means
+                        ### Now recenter the values relative to their average rather than absolute, to allow scaling from average
+                        mim_flattened = noise_pred_mimic.flatten(2)
+                        cfg_flattened = noise_pred.flatten(2)
+                        mim_means = mim_flattened.mean(dim=2).unsqueeze(2)
+                        cfg_means = cfg_flattened.mean(dim=2).unsqueeze(2)
+                        mim_centered = mim_flattened - mim_means
+                        cfg_centered = cfg_flattened - cfg_means
 
-                    ### Get the maximum value of all datapoints (with an optional threshold percentile on the uncond)
-                    mim_max = mim_centered.abs().max(dim=2).values.unsqueeze(2)
-                    orig_dtype = cfg_centered.dtype
-                    if orig_dtype not in [torch.float, torch.double]:
-                        cfg_centered = cfg_centered.float()
-                    cfg_max = torch.quantile(cfg_centered.abs(), threshold_percentile, dim=2).unsqueeze(2)
-                    actualMax = torch.maximum(cfg_max, mim_max)
+                        ### Get the maximum value of all datapoints (with an optional threshold percentile on the uncond)
+                        mim_max = mim_centered.abs().max(dim=2).values.unsqueeze(2)
+                        orig_dtype = cfg_centered.dtype
+                        if orig_dtype not in [torch.float, torch.double]:
+                            cfg_centered = cfg_centered.float()
+                        cfg_max = torch.quantile(cfg_centered.abs(), threshold_percentile, dim=2).unsqueeze(2)
+                        actualMax = torch.maximum(cfg_max, mim_max)
 
-                    ### Clamp to the max
-                    cfg_centered = cfg_centered.type(orig_dtype)
-                    cfg_clamped = cfg_centered.clamp(-actualMax, actualMax)
-                    ### Now shrink from the max to normalize and grow to the mimic scale (instead of the CFG scale)
-                    cfg_renormalized = (cfg_clamped / actualMax) * mim_max
+                        ### Clamp to the max
+                        cfg_centered = cfg_centered.type(orig_dtype)
+                        cfg_clamped = cfg_centered.clamp(-actualMax, actualMax)
+                        ### Now shrink from the max to normalize and grow to the mimic scale (instead of the CFG scale)
+                        cfg_renormalized = (cfg_clamped / actualMax) * mim_max
 
-                    ### Now add it back onto the averages to get into real scale again and return
-                    result = cfg_renormalized + cfg_means
-                    noise_pred = result.unflatten(2, noise_pred_mimic.shape[2:])
-                    if orig_dtype not in [torch.float, torch.double]:
-                        noise_pred = noise_pred.to(torch.float16)
-                    ### End Dynamic Scale ###
+                        ### Now add it back onto the averages to get into real scale again and return
+                        result = cfg_renormalized + cfg_means
+                        noise_pred = result.unflatten(2, noise_pred_mimic.shape[2:])
+                        if orig_dtype not in [torch.float, torch.double]:
+                            noise_pred = noise_pred.to(torch.float16)
+                        ### End Dynamic Scale ###
 
-                # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+                    # compute the previous noisy sample x_t -> x_t-1
+                    latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
 
-                # call the callback, if provided
-                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
-                    progress_bar.update()
-                    if callback is not None and i % callback_steps == 0:
-                        callback(i, t, latents)
+                    # call the callback, if provided
+                    if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
+                        progress_bar.update()
+                        if callback is not None and i % callback_steps == 0:
+                            callback(i, t, latents)
 
         # 8. Post-processing
-        image = self.decode_latents(latents)
+        ### Start VAE Chop and Reassemble ###
+        """MIT License
+        Copyright (c) 2023 thekitchenscientist
+
+        Permission is hereby granted, free of charge, to any person obtaining a copy
+        of this software and associated documentation files (the "Software"), to deal
+        in the Software without restriction, including without limitation the rights
+        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        copies of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+
+        The above copyright notice and this permission notice shall be included in all
+        copies or substantial portions of the Software.
+
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+        SOFTWARE."""    
+        if alt_mode == "panorama" and (width >= 1024 or height >=1024):
+            
+            vae_split_size = int(64*8)
+            image_stride = int(8*8)
+            up_alpha =[]
+            down_alpha=[]
+            image_parts = []
+            masks=[]
+            passes=[]        
+            start = 5
+            stop = 5
+            step_size = (vae_split_size/2)/(start+stop)
+            if height == 512:
+                x_dim = height
+                repeats=height
+            elif width == 512:
+                repeats=width  
+                x_dim = width
+            y_dim = int(repeats/2)
+            
+            # create masks with gradients
+            up_sigmoid_ = sigmoid(np.arange(start=1*start, stop=-1*stop, step=-1/step_size))
+            up_sigmoid_ =up_sigmoid_.reshape(-1,1)
+            up_alpha = np.repeat(up_sigmoid_, repeats=repeats, axis=1)
+
+            down_sigmoid_ = sigmoid(np.arange(start=-1*start, stop=1*stop, step=1/step_size))
+            down_sigmoid_ =down_sigmoid_.reshape(-1,1)
+            down_alpha = np.repeat(down_sigmoid_, repeats=repeats, axis=1)
+
+            alpha_centre = np.concatenate((up_alpha, down_alpha), axis=0)
+            alpha_centre=torch.from_numpy(alpha_centre)
+            alpha_edge = np.concatenate((down_alpha,up_alpha), axis=0)
+            alpha_edge=torch.from_numpy(alpha_edge)
+                            
+            canvas_padding = torch.zeros(1,3,x_dim,y_dim).cpu()
+            mask_padding = torch.zeros(x_dim,y_dim).cpu()
+            mask_pass = torch.ones(x_dim,y_dim).cpu()
+            if height == 512:
+                alpha_centre=torch.rot90(alpha_centre)
+                alpha_edge=torch.rot90(alpha_edge)
+                canvas_join_axis=3
+                mask_join_axis=1
+            elif width == 512:
+                canvas_padding=torch.rot90(canvas_padding, dims=[2,3])
+                mask_padding=torch.rot90(mask_padding, dims=[0,1])
+                mask_pass=torch.rot90(mask_pass, dims=[0,1])
+                canvas_join_axis=2
+                mask_join_axis=0
+            
+            # decode latents in small squares using same passes as denoising
+            for h_start, h_end, w_start, w_end in views:
+                latent_part = latents[:, :, h_start:h_end, w_start:w_end]
+                latent_part = 1 / 0.18215 * latent_part
+                image_part = self.vae.decode(latent_part).sample
+                image_parts.append(image_part)
+            
+            # move the decoded latents to CPU
+            n_splits = len(image_parts)
+            for i in range(n_splits):
+                image_parts[i] = image_parts[i].cpu()
+            #apply the mask to the image parts and rebuild the image    
+            canvas_count = int(width/vae_split_size)
+            mask_count = canvas_count-1
+            stride_index=0
+            for i in range(n_splits):
+                if i == 0:
+                    canvas = image_parts[i]
+                    canvas_mask = mask_pass 
+                    seams = canvas_padding
+                    seams_mask= mask_padding
+                elif i == n_splits-1:
+                    canvas = torch.cat((canvas,image_parts[i]), canvas_join_axis).cpu()
+                    canvas_mask = torch.cat((canvas_mask,mask_pass), mask_join_axis).cpu() 
+                    seams = torch.cat((seams,canvas_padding), canvas_join_axis).cpu()
+                    seams_mask= torch.cat((seams_mask,mask_padding), mask_join_axis).cpu()
+                elif stride_index % vae_split_size == 0:
+                    canvas = torch.cat((canvas,image_parts[i]), canvas_join_axis).cpu()
+                elif int(stride_index - int(vae_split_size/2)) % vae_split_size == 0:
+                    canvas_mask = torch.cat((canvas_mask,alpha_centre), mask_join_axis).cpu() 
+                    seams = torch.cat((seams,image_parts[i]), canvas_join_axis).cpu()
+                    seams_mask= torch.cat((seams_mask,alpha_edge), mask_join_axis).cpu()
+                stride_index+=image_stride
+            
+            recombined_image = canvas*canvas_mask+ seams*seams_mask
+            image = (recombined_image / 2 + 0.5).clamp(0, 1)
+            # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
+            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+        ### End VAE Chop and Reassemble ###
+        
+        else:
+            image = self.decode_latents(latents)
 
         # 9. Run safety checker
         image, has_nsfw_concept = self.run_safety_checker(image, device, text_embeddings.dtype)

@@ -28,7 +28,7 @@ with sd_lite:
                     explore_anti_prompt = gr.Textbox(label="Negative prompt", show_label=False, lines=1, placeholder="What should the image avoid including?")
                 with gr.Row():
                     explore_alt_prompt = gr.Textbox(label="Alternative prompt", show_label=False, lines=1, placeholder=f"How do you want it styled?")
-                    explore_alt_mode = gr.Dropdown(label="Mode", show_label=False,choices=["no delay", "delay adding style until 15%", "delay adding style until 30%", "delay adding style until 45%","mirror up:down","mirror left:right","rotate 90","rotate 180"], value="delay adding style until 15%")
+                    explore_alt_mode = gr.Dropdown(label="Mode", show_label=False,choices=["no delay", "delay adding style until 15%", "delay adding style until 30%", "delay adding style until 45%", "panorama 2048", "panorama 4096", "panorama 8192", "vertorama 2048", "vertorama 4096", "vertorama 8192", "mirror up:down","mirror left:right","rotate 90","rotate 180"], value="delay adding style until 15%")
                 explore_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
             with gr.Accordion("The text to image method is using Safer Diffusion which aims to supress inappropriate content", open=False):
                 gr.Markdown("After (n_steps*0.1)+1 to allow the composition to form, the model then will steer the image diffusion away from the categories of 'hate, harassment, violence, suffering, humiliation, harm, suicide, sexual, nudity, bodily fluids, blood, obscene gestures, illegal activity, drug use, theft, vandalism, weapons, child abuse, brutality & cruelty.")

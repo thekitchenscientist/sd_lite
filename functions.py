@@ -1,9 +1,8 @@
-﻿from diffusers import DiffusionPipeline, StableDiffusionDepth2ImgPipeline, EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler
+﻿from diffusers import DiffusionPipeline, StableDiffusionDepth2ImgPipeline, DDIMScheduler, EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler, UniPCMultistepScheduler
 import torch
-from scripts.pipeline_stable_diffusion import StableDiffusionSaferPipeline
-from scripts.pipeline_stable_diffusion_img2img import StableDiffusionSaferImg2ImgPipeline
-from scripts.pipeline_stable_diffusion_walk import StableDiffusionWalkPipeline
-#from scripts.pipeline_stable_diffusion_depth2img import StableDiffusionSaferDepth2ImgPipeline
+from src.pipeline_stable_diffusion_multi import StableDiffusionMultiPipeline
+from src.pipeline_stable_diffusion_img2img import StableDiffusionSaferImg2ImgPipeline
+from src.pipeline_stable_diffusion_walk import StableDiffusionWalkPipeline
 from PIL import PngImagePlugin, Image
 import random
 import config
@@ -313,9 +312,9 @@ def load_txt2img_pipe(scheduler):
 
     if config.loaded_pipe != 'txt2img':
 
-        print("Loading safer txt2img model... This may take 1-5 minutes depending on available RAM.")
+        print("Loading txt2img model... This may take 1-5 minutes depending on available RAM.")
 
-        pipe = StableDiffusionSaferPipeline.from_pretrained(
+        pipe = StableDiffusionMultiPipeline.from_pretrained(
             config.MODEL_ID,
             revision="fp16" if config.HALF_PRECISION else "fp32",
             torch_dtype=torch.float16 if config.HALF_PRECISION else torch.float32,
@@ -399,7 +398,7 @@ def load_instructpix2pix_pipe(scheduler):
 
         print("Loading instructpix2pix model... This may take 1-5 minutes depending on available RAM.")
 
-        pipe = StableDiffusionSaferPipeline.from_pretrained(
+        pipe = StableDiffusionMultiPipeline.from_pretrained(
             config.EDIT_MODEL_ID,
             revision="fp16" if config.HALF_PRECISION else "fp32",
             torch_dtype=torch.float16 if config.HALF_PRECISION else torch.float32,
@@ -420,8 +419,12 @@ def txt2img_inference(prompt="", anti_prompt="", alt_prompt=None, alt_mode="0.15
 
     generator = torch.Generator('cuda').manual_seed(seed)
     global scheduler
-    if config.IMAGE_SCHEDULER == 'EulerAncestralDiscrete':
+    if alt_mode[:8] == "panorama":
+        scheduler = DDIMScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
+    elif config.IMAGE_SCHEDULER == 'EulerAncestralDiscrete':
         scheduler = EulerAncestralDiscreteScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
+    elif config.IMAGE_SCHEDULER == 'UniPC':
+        scheduler = UniPCMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
     else:
         scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
 
@@ -448,6 +451,8 @@ def walk_inference(prompt="", anti_prompt="", alt_prompt=None, alt_mode=None, n_
     global scheduler
     if alt_mode is not None and alt_mode[:-8]== "coherent":
         scheduler = EulerAncestralDiscreteScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
+    elif config.IMAGE_SCHEDULER == 'UniPC':
+        scheduler = UniPCMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
     else:
         scheduler = DPMSolverMultistepScheduler.from_pretrained(config.MODEL_ID, subfolder="scheduler")
 
@@ -608,13 +613,29 @@ def text_to_image(prompt, anti_prompt, alt_prompt, alt_mode, n_images,  guidance
     output_name = str(uuid.uuid4())
     result = []
     file_metadata = []
+    image_bracketing = config.IMAGE_BRACKETING
 
     if config.txt2img_pipe is None:
         config.txt2img_pipe = load_txt2img_pipe(scheduler)
-    
+ 
+    if alt_mode[:8] == "panorama":
+        image_bracketing = False
+        width = int(alt_mode[-4:])
+        height =512
+        alt_mode = "panorama"
+        if steps < 20:
+            steps = 10
+    elif alt_mode[:9] == "vertorama":
+        image_bracketing = False
+        width = 512
+        height = int(alt_mode[-4:])
+        alt_mode = "panorama"
+        if steps < 20:
+            steps = 10
+
     for settings in range(-1,2):
 
-        if config.IMAGE_BRACKETING == False and settings != 0:
+        if image_bracketing == False and settings != 0:
             continue
 
         # setup image properties
