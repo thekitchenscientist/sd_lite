@@ -417,7 +417,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                 safety_embeddings = safety_embeddings.view(batch_size * num_images_per_prompt, seq_len, -1)
 
             
-            if pan_stride > 0 and alt_prompt is not None:
+            if alt_prompt is not None and nudge_text_concept is None:
                 text_embeddings = torch.cat([uncond_embeddings, text_embeddings, alt_prompt_embeddings])          
             elif alt_prompt is None and nudge_text_concept is not None:
                 text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings])
