@@ -57,11 +57,11 @@ logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-def get_views(panorama_height, panorama_width, window_size=64, stride=8):
-    panorama_height /= 8
-    panorama_width /= 8
-    num_blocks_height = (panorama_height - window_size) // stride + 1
-    num_blocks_width = (panorama_width - window_size) // stride + 1
+def get_views(pan_height, pan_width, window_size=64, stride=8):
+    #pan_height /= 8
+    #pan_width /= 8
+    num_blocks_height = (pan_height - window_size) // stride + 1
+    num_blocks_width = (pan_width - window_size) // stride + 1
     total_num_blocks = int(num_blocks_height * num_blocks_width)
     views = []
     for i in range(total_num_blocks):
@@ -417,9 +417,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                 safety_embeddings = safety_embeddings.view(batch_size * num_images_per_prompt, seq_len, -1)
 
             
-            if alt_mode == "panorama" and alt_prompt is None:
-                text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
-            elif alt_mode == "panorama" and alt_prompt is not None:
+            if pan_stride > 0 and alt_prompt is not None:
                 text_embeddings = torch.cat([uncond_embeddings, text_embeddings, alt_prompt_embeddings])          
             elif alt_prompt is None and nudge_text_concept is not None:
                 text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings])
@@ -534,6 +532,16 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         callback_steps: Optional[int] = 1,
         alt_prompt: Optional[Union[str, List[str]]] = None,
         alt_mode: Optional[str] = "0.15",
+        alt_mode_warm_up: Optional[int] = 3,
+        alt_mode_cool_down: Optional[int] = 0,
+        cross_fade: Optional[Union[int, List[int]]] = 7,        
+        dynamic_scale_factor: Optional[int] = 2,
+        dynamic_scale_mimic: Optional[float]  = 7,  
+        dynamic_scale_threshold_percentile: Optional[float] = 0.9,   
+        pan_window_size: Optional[int] = 512, 
+        pan_stride: Optional[int] = 0,
+        post_process_window_size: Optional[int] = 512,
+        post_process_recombine_image: bool = True,
         nudge_text_concept: Optional[str] = 'hate, harassment, violence, suffering, humiliation, harm, suicide, sexual, nudity, bodily fluids, blood, obscene gestures, illegal activity, drug use, theft, vandalism, weapons, child abuse, brutality, cruelty'
     ):
         r"""
@@ -586,6 +594,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                 An additonal noise channel to guide the image creation.
             alt_mode  (`str`, *optional*, defaults to "0.15"):
                 How the additonal noise channel should be used.
+                #64, 128, 192
             nudge_text_concept (`str`, *optional*, defaults to "harms identified by research")
                 Nude the generation away from the listed concepts. Requires in be active for at least 15 steps to be fully effective
             
@@ -617,6 +626,8 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         change_over_step = int(num_inference_steps+1)
         # prepare the switch over for alt_prompt
         if alt_prompt is None:
+            None
+        elif pan_stride > 0:
             None
         elif len(alt_mode) <= 2:
             alt_prompt = prompt + ". "+ alt_prompt
@@ -663,6 +674,15 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
         # 7. Denoising loop
+                
+        latent_multiplier = 2
+        if pan_stride == 0 and nudge_text_concept is not None:
+            latent_multiplier +=1
+        if alt_prompt is not None:
+            latent_multiplier +=1   
+
+            
+            
         ### SaferDiffusion ###
         """MIT License
         Copyright (c) 2022 Manuel Brack
@@ -686,14 +706,11 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         SOFTWARE."""        
         safety_momentum = None
         sld_guidance_scale = 5000
-        sld_warmup_steps = 2#num_inference_steps+1
+        sld_warmup_steps = 2
         sld_threshold = 0.01
         sld_momentum_scale = 0.5
         sld_mom_beta = 0.7
         
-        latent_multiplier = 3
-        if alt_prompt is not None:
-            latent_multiplier +=1
         ### End SaferDiffusion ###
 
         ### Start Dynamic Scale ###
@@ -718,20 +735,21 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
         OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
         SOFTWARE."""
-        guidance_scale_mimic = 7  
-        threshold_percentile = 0.9        
+        guidance_scale_mimic = dynamic_scale_mimic  
+        threshold_percentile = dynamic_scale_threshold_percentile        
         guidance_list = []
-        power_val = 2
 
         def modify_scale(step, min, scale=guidance_scale):
             scale -= min
             max = num_inference_steps - 1
-            scale *= math.pow(step / max, power_val)
+            scale *= math.pow(step / max, dynamic_scale_factor)
             scale += min
             return round(scale,3)
             
         for i in range (0,num_inference_steps):
-            if guidance_scale >=9:
+            if dynamic_scale_factor == 0:
+                modified_scale = guidance_scale
+            elif guidance_scale >=9:
                 modified_scale = modify_scale(i, 5)          
             elif guidance_scale <=5:
                 modified_scale = modify_scale(i, guidance_scale, guidance_scale*1.5)            
@@ -740,37 +758,45 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             guidance_list.extend([modified_scale]) 
 
         ### End Dynamic Scale ###
-        
-        latent_multiplier = 2
-        if alt_mode != "panorama" and nudge_text_concept is not None:
-            latent_multiplier +=1
-        if alt_prompt is not None:
-            latent_multiplier +=1        
-        
-        
+
         ### Start Panorama Diffusion ###
-        if alt_mode == "panorama":
-            views = get_views(height, width)
+        if  pan_stride > 0:
+            window_size=pan_window_size//8
+            pan_height = height//8
+            pan_width = width//8
+            # stride cant be half size of window
+            if pan_stride > pan_window_size:
+                stride=window_size
+            else:
+                stride=int(pan_stride/8)
+
+            views = get_views(pan_height, pan_width, window_size, stride)
             count = torch.zeros_like(latents)
             value = torch.zeros_like(latents)
+            
+            # prompt blending
+            num_blocks_height = (pan_height - window_size) // stride + 1
+            num_blocks_width = (pan_width - window_size) // stride + 1
+                        
             prompt_weight_list = []
-            number_slices = len(views)
-            start_slice = int(number_slices/5)
-            start_mid_slice = int(number_slices/3)
-            end_mid_slice = int(number_slices - number_slices/3)
-            end_slice = int(number_slices - number_slices/5)
-            mid_range=end_slice-start_slice
-            for i in range(number_slices):
-                if i < start_mid_slice:
-                    prompt_weight_list.append(1)
-                elif i>= start_slice and i <= end_slice:
-                    offset = i-start_slice
-                    prompt_weight_list.append(1-(offset/mid_range))
-                elif i> end_slice:
-                    prompt_weight_list.append(0)
-                else:
-                    prompt_weight_list.append((number_slices-i)/number_slices)
-                    
+            if isinstance(cross_fade,list):
+                prompt_blend_start = cross_fade[0]
+                prompt_blend_end = cross_fade[1]
+            else:
+                prompt_blend_start = prompt_blend_end = cross_fade
+                
+            if height == width or height > width:
+                blend_step_size = (prompt_blend_start+prompt_blend_end)/num_blocks_height
+                prompt_weight_list = sigmoid(np.arange(start=1*prompt_blend_start, stop=-1*prompt_blend_end, step=-1*blend_step_size))
+                prompt_weight_list =prompt_weight_list.round(3)
+                prompt_weight_list = np.repeat(prompt_weight_list, repeats=num_blocks_width, axis=0)
+            else:
+                blend_step_size = (prompt_blend_start+prompt_blend_end)/num_blocks_width
+                prompt_weight_list = sigmoid(np.arange(start=1*prompt_blend_start, stop=-1*prompt_blend_end, step=-1*blend_step_size))
+                prompt_weight_list =prompt_weight_list.reshape(-1,1).round(3)
+                prompt_weight_list = np.repeat(prompt_weight_list, repeats=num_blocks_height, axis=1)
+                prompt_weight_list = prompt_weight_list.T.flatten()
+                                            
             num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
             with self.progress_bar(total=num_inference_steps) as progress_bar:
                 for i, t in enumerate(timesteps):
@@ -779,7 +805,6 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                     #print(i)
                     slice_count = 0
                     for h_start, h_end, w_start, w_end in views:
-                        
                         # TODO we can support batches, and pass multiple views at once to the unet
                         latent_view = latents[:, :, h_start:h_end, w_start:w_end]
                         
@@ -795,6 +820,8 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                             noise_pred_text = noise_pred_text*(prompt_weight_list[slice_count])+noise_pred_alt_text*(1-prompt_weight_list[slice_count])
                         else:
                             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                                            
+                        guidance_scale = guidance_list[i]
                         noise_pred = noise_pred_text + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                         # compute the denoising step with the reference model
@@ -802,10 +829,9 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                         value[:, :, h_start:h_end, w_start:w_end] += latents_view_denoised
                         count[:, :, h_start:h_end, w_start:w_end] += 1
                         slice_count += 1
-
                     # take the MultiDiffusion step
                     latents = torch.where(count > 0, value / count, value)
-
+                    
                     # call the callback, if provided
                     if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                         progress_bar.update()
@@ -957,93 +983,84 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
         OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
         SOFTWARE."""    
-        if alt_mode == "panorama" and (width >= 1024 or height >=1024):
-            
-            vae_split_size = int(64*8)
-            image_stride = int(8*8)
-            up_alpha =[]
-            down_alpha=[]
+        if width*height >= post_process_window_size*post_process_window_size:
+            vae_image_window = int(post_process_window_size)
+            image_offset = vae_image_window//2
+            # decode latents in small squares using less passes than denoising
             image_parts = []
-            masks=[]
-            passes=[]        
-            start = 5
-            stop = 5
-            step_size = (vae_split_size/2)/(start+stop)
-            if height == 512:
-                x_dim = height
-                repeats=height
-            elif width == 512:
-                repeats=width  
-                x_dim = width
-            y_dim = int(repeats/2)
-            
-            # create masks with gradients
-            up_sigmoid_ = sigmoid(np.arange(start=1*start, stop=-1*stop, step=-1/step_size))
-            up_sigmoid_ =up_sigmoid_.reshape(-1,1)
-            up_alpha = np.repeat(up_sigmoid_, repeats=repeats, axis=1)
-
-            down_sigmoid_ = sigmoid(np.arange(start=-1*start, stop=1*stop, step=1/step_size))
-            down_sigmoid_ =down_sigmoid_.reshape(-1,1)
-            down_alpha = np.repeat(down_sigmoid_, repeats=repeats, axis=1)
-
-            alpha_centre = np.concatenate((up_alpha, down_alpha), axis=0)
-            alpha_centre=torch.from_numpy(alpha_centre)
-            alpha_edge = np.concatenate((down_alpha,up_alpha), axis=0)
-            alpha_edge=torch.from_numpy(alpha_edge)
-                            
-            canvas_padding = torch.zeros(1,3,x_dim,y_dim).cpu()
-            mask_padding = torch.zeros(x_dim,y_dim).cpu()
-            mask_pass = torch.ones(x_dim,y_dim).cpu()
-            if height == 512:
-                alpha_centre=torch.rot90(alpha_centre)
-                alpha_edge=torch.rot90(alpha_edge)
-                canvas_join_axis=3
-                mask_join_axis=1
-            elif width == 512:
-                canvas_padding=torch.rot90(canvas_padding, dims=[2,3])
-                mask_padding=torch.rot90(mask_padding, dims=[0,1])
-                mask_pass=torch.rot90(mask_pass, dims=[0,1])
-                canvas_join_axis=2
-                mask_join_axis=0
-            
-            # decode latents in small squares using same passes as denoising
+            views = get_views(height//8, width//8, window_size=vae_image_window//8, stride=image_offset//8)
             for h_start, h_end, w_start, w_end in views:
                 latent_part = latents[:, :, h_start:h_end, w_start:w_end]
                 latent_part = 1 / 0.18215 * latent_part
                 image_part = self.vae.decode(latent_part).sample
                 image_parts.append(image_part)
-            
-            # move the decoded latents to CPU
-            n_splits = len(image_parts)
-            for i in range(n_splits):
-                image_parts[i] = image_parts[i].cpu()
-            #apply the mask to the image parts and rebuild the image    
-            canvas_count = int(width/vae_split_size)
-            mask_count = canvas_count-1
-            stride_index=0
-            for i in range(n_splits):
-                if i == 0:
-                    canvas = image_parts[i]
-                    canvas_mask = mask_pass 
-                    seams = canvas_padding
-                    seams_mask= mask_padding
-                elif i == n_splits-1:
-                    canvas = torch.cat((canvas,image_parts[i]), canvas_join_axis).cpu()
-                    canvas_mask = torch.cat((canvas_mask,mask_pass), mask_join_axis).cpu() 
-                    seams = torch.cat((seams,canvas_padding), canvas_join_axis).cpu()
-                    seams_mask= torch.cat((seams_mask,mask_padding), mask_join_axis).cpu()
-                elif stride_index % vae_split_size == 0:
-                    canvas = torch.cat((canvas,image_parts[i]), canvas_join_axis).cpu()
-                elif int(stride_index - int(vae_split_size/2)) % vae_split_size == 0:
-                    canvas_mask = torch.cat((canvas_mask,alpha_centre), mask_join_axis).cpu() 
-                    seams = torch.cat((seams,image_parts[i]), canvas_join_axis).cpu()
-                    seams_mask= torch.cat((seams_mask,alpha_edge), mask_join_axis).cpu()
-                stride_index+=image_stride
-            
-            recombined_image = canvas*canvas_mask+ seams*seams_mask
-            image = (recombined_image / 2 + 0.5).clamp(0, 1)
-            # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
-            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+                
+            if post_process_recombine_image:
+                
+                up_alpha =[]
+                down_alpha=[]      
+                start = 5
+                stop = 5
+                step_size = (image_offset)/(start+stop)
+
+                # create masks with gradients
+                up_sigmoid_ = sigmoid(np.arange(start=1*start, stop=-1*stop, step=-1/step_size))
+                up_sigmoid_ =up_sigmoid_.reshape(-1,1)
+                up_alpha = np.repeat(up_sigmoid_, repeats=vae_image_window, axis=1)
+
+                down_sigmoid_ = sigmoid(np.arange(start=-1*start, stop=1*stop, step=1/step_size))
+                down_sigmoid_ =down_sigmoid_.reshape(-1,1)
+                down_alpha = np.repeat(down_sigmoid_, repeats=vae_image_window, axis=1)
+
+                alpha_centre = np.concatenate((up_alpha, down_alpha), axis=0)
+                alpha_centre=torch.from_numpy(alpha_centre).cuda() 
+                alpha_edge = np.concatenate((down_alpha,up_alpha), axis=0)
+                alpha_edge=torch.from_numpy(alpha_edge).cuda() 
+
+                w_alpha_centre=torch.rot90(alpha_centre).cuda() 
+                w_alpha_edge=torch.rot90(alpha_edge).cuda() 
+                h_alpha_centre = alpha_centre
+                h_alpha_edge = alpha_edge
+
+                canvas = torch.zeros(num_images_per_prompt,3,height,width).cuda() 
+                h_seams = torch.zeros(num_images_per_prompt,3,height,width).cuda()
+                w_seams = torch.zeros(num_images_per_prompt,3,height,width).cuda()
+                c_seams = torch.zeros(num_images_per_prompt,3,height,width).cuda()
+                canvas_mask = torch.ones(num_images_per_prompt,3,height,width).cuda() 
+                h_seams_mask = torch.ones(num_images_per_prompt,3,height,width).cuda()
+                w_seams_mask = torch.ones(num_images_per_prompt,3,height,width).cuda()
+                c_seams_mask = torch.ones(num_images_per_prompt,3,height,width).cuda()
+                #work through tiles, mask seams and reassemble
+                count = 0
+                views = get_views(height, width, window_size=vae_image_window, stride=image_offset)
+                for h_start, h_end, w_start, w_end in views:
+                    if h_start % vae_image_window == 0 and w_start % vae_image_window == 0:
+                        canvas[:, :, h_start:h_end, w_start:w_end] += image_parts[count]
+                    elif h_start % image_offset == 0 and w_start % vae_image_window == 0:
+                        h_seams[:, :, h_start:h_end, w_start:w_end] += image_parts[count]
+                        w_seams_mask[:, :, h_start:h_end, w_start:w_end] *= h_alpha_centre
+                        h_seams_mask[:, :, h_start:h_end, w_start:w_end] *= h_alpha_edge
+                        canvas_mask[:, :, h_start:h_end, w_start:w_end] *= h_alpha_centre
+                    elif h_start % vae_image_window == 0 and w_start % image_offset == 0:
+                        w_seams[:, :, h_start:h_end, w_start:w_end] += image_parts[count]
+                        h_seams_mask[:, :, h_start:h_end, w_start:w_end] *= w_alpha_centre 
+                        w_seams_mask[:, :, h_start:h_end, w_start:w_end] *= w_alpha_edge
+                        canvas_mask[:, :, h_start:h_end, w_start:w_end] *= w_alpha_centre
+                    else:
+                        c_seams[:, :, h_start:h_end, w_start:w_end] += image_parts[count]
+                        c_seams_mask[:, :, h_start:h_end, w_start:w_end] *= h_alpha_edge
+                        c_seams_mask[:, :, h_start:h_end, w_start:w_end] *= w_alpha_edge        
+                    count+= 1
+
+                recombined_image = canvas*canvas_mask+c_seams*c_seams_mask+h_seams*h_seams_mask+ w_seams*w_seams_mask
+                image = (recombined_image / 2 + 0.5).clamp(0, 1)
+                # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
+                image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+            else:
+                image = []
+                for images in image_parts:
+                    image.append((images / 2 + 0.5).clamp(0, 1))
+                image = image.cpu().permute(0, 2, 3, 1).float().numpy()
         ### End VAE Chop and Reassemble ###
         
         else:
