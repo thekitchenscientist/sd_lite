@@ -9,7 +9,7 @@ The guiding principal of this project is to be able to run Stable Diffusion with
 * taking steps to minimise harmful outputs and combatting the model bias
 * as few options as possible (abstract away CFG, steps, sampler, height, width, model and prompt refining, etc)
 * as few dependencies as possible (currently 8 if you want to use a Graphical User Interface)
-* as few resources as possible, e.g. systems with 7+ year old processors, only 8GB RAM and 6GB VRAM (making it work with just 3G VRAM is something I'll let others try).
+* as few resources as possible, e.g. systems with 7+ year old processors, only 8GB RAM and 2GB VRAM.
 
 The recommendation at the end of 2022 from StabilityAI is to use xformers for a 25-40 % boost in diffusion speed. This requires Microsoft Visual Studio, Nvidia CUDA, git, ninja & wheel in order to build the .whl file compatible with your system. The payback on the additional 11GB hard drive space and 2 hours setup comes after generating about 3000 images.
 
