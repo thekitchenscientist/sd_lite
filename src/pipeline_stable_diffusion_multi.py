@@ -79,6 +79,50 @@ def sigmoid(x):
     y[i] = 1 / (1 + math.exp(-x[i]))
   return y
 
+### Start Dynamic Scale ###
+"""The MIT License (MIT)
+
+Copyright (c) 2023 Alex "mcmonkey" Goodwin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE."""
+def modify_scale(num_inference_steps,step, min_scale, dynamic_scale_factor, scale):
+    scale -= min_scale
+    max_scale = float(num_inference_steps - 1)
+    scale *= math.pow(float(step) / max_scale, dynamic_scale_factor)
+    scale += min_scale
+    return round(scale,3)
+
+def get_dynamic_scale(num_inference_steps,guidance_scale,dynamic_scale_factor):
+    guidance_list=[]
+    for i in range (num_inference_steps):
+        if dynamic_scale_factor == 0:
+            modified_scale = guidance_scale
+        elif guidance_scale >=7:
+            modified_scale = modify_scale(num_inference_steps,i, 5, dynamic_scale_factor, guidance_scale)          
+        #elif guidance_scale <=5:
+        #    modified_scale = modify_scale(num_inference_steps,i, guidance_scale, dynamic_scale_factor, guidance_scale*1.5)            
+        else: 
+            modified_scale = modify_scale(num_inference_steps,i, guidance_scale-1, dynamic_scale_factor, guidance_scale+1)
+        guidance_list.extend([modified_scale]) 
+    return guidance_list
+### End Dynamic Scale ###
+
 class StableDiffusionMultiPipeline(DiffusionPipeline):
     r"""
     Pipeline for text-to-image generation using Stable Diffusion.
@@ -260,7 +304,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
 
-    def _encode_prompt(self, prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt, alt_prompt, alt_mode,nudge_text_concept):
+    def _encode_prompt(self, prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt, alt_prompt_list):
         r"""
         Encodes the prompt into text encoder hidden states.
 
@@ -358,75 +402,41 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             uncond_embeddings = uncond_embeddings.repeat(1, num_images_per_prompt, 1)
             uncond_embeddings = uncond_embeddings.view(batch_size * num_images_per_prompt, seq_len, -1)
 
-            ### AlternativePrompt ###            
+            ### AlternativePrompt ###
+            text_embeddings_list = [uncond_embeddings, text_embeddings]
+            
             # get alt_prompt text embeddings
-            if alt_prompt is not None:
-                alt_prompt_input = self.tokenizer(
-                    alt_prompt,
-                    padding="max_length",
-                    max_length=max_length,
-                    truncation=True,
-                    return_tensors="pt",
-                )
-                
-                if hasattr(self.text_encoder.config, "use_attention_mask") and self.text_encoder.config.use_attention_mask:
-                    attention_mask = alt_prompt_input.attention_mask.to(device)
-                else:
-                    attention_mask = None            
+            if len(alt_prompt_list) > 0:
+                for alt_prompt in alt_prompt_list:
+                    alt_prompt_input = self.tokenizer(
+                        alt_prompt,
+                        padding="max_length",
+                        max_length=max_length,
+                        truncation=True,
+                        return_tensors="pt",
+                    )
+
+                    if hasattr(self.text_encoder.config, "use_attention_mask") and self.text_encoder.config.use_attention_mask:
+                        attention_mask = alt_prompt_input.attention_mask.to(device)
+                    else:
+                        attention_mask = None            
+
+                    alt_prompt_embeddings = self.text_encoder(
+                        alt_prompt_input.input_ids.to(device),
+                        attention_mask=attention_mask,
+                    )
+                    alt_prompt_embeddings = alt_prompt_embeddings[0]
+
+                    # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
+                    seq_len = alt_prompt_embeddings.shape[1]
+                    alt_prompt_embeddings = alt_prompt_embeddings.repeat(1, num_images_per_prompt, 1)
+                    alt_prompt_embeddings = alt_prompt_embeddings.view(batch_size * num_images_per_prompt, seq_len, -1)
                     
-                alt_prompt_embeddings = self.text_encoder(
-                    alt_prompt_input.input_ids.to(device),
-                    attention_mask=attention_mask,
-                )
-                alt_prompt_embeddings = alt_prompt_embeddings[0]
+                    text_embeddings_list.append(alt_prompt_embeddings)
 
-                # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
-                seq_len = alt_prompt_embeddings.shape[1]
-                alt_prompt_embeddings = alt_prompt_embeddings.repeat(1, num_images_per_prompt, 1)
-                alt_prompt_embeddings = alt_prompt_embeddings.view(batch_size * num_images_per_prompt, seq_len, -1)
-                ### End AlternativePrompt ###   
-            
-            ### SaferDiffusion ###
-            if nudge_text_concept is not None:
-                # Encode the safety concept text
-                #nudge_text_concept = 'hate, harassment, violence, suffering, humiliation, harm, suicide, ' \
-                #                        'sexual, nudity, bodily fluids, blood, obscene gestures, illegal activity, ' \
-                #                        'drug use, theft, vandalism, weapons, child abuse, brutality, cruelty'
-                safety_concept_input = self.tokenizer(
-                    [nudge_text_concept],
-                    padding="max_length",
-                    max_length=max_length,
-                    truncation=True,
-                    return_tensors="pt",
-                )
-                    
-                if hasattr(self.text_encoder.config, "use_attention_mask") and self.text_encoder.config.use_attention_mask:
-                    attention_mask = safety_concept_input.attention_mask.to(device)
-                else:
-                    attention_mask = None
-
-                safety_embeddings = self.text_encoder(
-                    safety_concept_input.input_ids.to(device),
-                    attention_mask=attention_mask,
-                )
-                safety_embeddings = safety_embeddings[0]
-                
-                # duplicate safety embeddings for each generation per prompt, using mps friendly method
-                seq_len = safety_embeddings.shape[1]
-                safety_embeddings = safety_embeddings.repeat(1, num_images_per_prompt, 1)
-                safety_embeddings = safety_embeddings.view(batch_size * num_images_per_prompt, seq_len, -1)
-
-            
-            if alt_prompt is not None and nudge_text_concept is None:
-                text_embeddings = torch.cat([uncond_embeddings, text_embeddings, alt_prompt_embeddings])          
-            elif alt_prompt is None and nudge_text_concept is not None:
-                text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings])
-            elif alt_prompt is not None and nudge_text_concept is not None:
-                text_embeddings = torch.cat([uncond_embeddings, text_embeddings, safety_embeddings, alt_prompt_embeddings])
-            else:
-                text_embeddings = torch.cat([uncond_embeddings, text_embeddings])    
-            ### End SaferDiffusion ###
-
+            text_embeddings = torch.cat(text_embeddings_list)
+            ### End AlternativePrompt ###   
+                        
             # For classifier free guidance, we need to do two forward passes.
             # Here we concatenate the unconditional and text embeddings into a single batch
             # to avoid doing two forward passes
@@ -535,7 +545,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         alt_mode_warm_up: Optional[int] = 3,
         alt_mode_cool_down: Optional[int] = 0,
         cross_fade: Optional[Union[int, List[int]]] = 7,        
-        dynamic_scale_factor: Optional[int] = 2,
+        dynamic_scale_factor: Optional[int] = 4,
         dynamic_scale_mimic: Optional[float]  = 7,  
         dynamic_scale_threshold_percentile: Optional[float] = 0.9,   
         pan_window_size: Optional[int] = 512, 
@@ -622,36 +632,73 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # 3. Encode input prompt
-        ### AlternativePrompt ###            
+        ### AlternativePrompt ###
+        if nudge_text_concept is not None and pan_stride ==0:
+            alt_prompt_list = [nudge_text_concept]
+        else:
+            alt_prompt_list = []
+
+        temporal_prompt_weight_list = []
+        if isinstance(cross_fade,list):
+            prompt_blend_start = cross_fade[0]
+            prompt_blend_end = cross_fade[1]
+        else:
+            prompt_blend_start = prompt_blend_end = cross_fade    
+        
         change_over_step = int(num_inference_steps+1)
+
         # prepare the switch over for alt_prompt
-        if alt_prompt is None:
-            None
-        elif pan_stride > 0:
-            None
-        elif len(alt_mode) <= 2:
-            alt_prompt = prompt + ". "+ alt_prompt
-            change_over_step = int(num_inference_steps)
-        elif len(alt_mode) <= 4:
-            alt_prompt = prompt + ". "+ alt_prompt
-            change_over_step = int(num_inference_steps*float(alt_mode))
-        elif alt_mode[:6] == "switch":
-            change_over_step = int(num_inference_steps*float(alt_mode[-3:-1])/100)
-            alt_mode = "switch"
-        elif alt_mode[:5] == "delay":
-            change_over_step = int(num_inference_steps*float(alt_mode[-3:-1])/100)
-            alt_prompt = prompt + ". "+ alt_prompt
-            alt_mode = "0"
-        elif alt_mode[:6] == "weight":
-            change_over_step = int(alt_mode[-2:])
-            alt_mode = "weight"
-        elif alt_mode[:6] == "mirror" or alt_mode[:6] == "rotate":
-            alt_prompt = prompt + ". "+ alt_prompt
-            change_over_step = int(num_inference_steps*0.15)
-        #print(change_over_step,alt_prompt, alt_mode)
+        blend_step_size = (prompt_blend_start+prompt_blend_end)/num_inference_steps
+
+        if alt_prompt is not None:
+            if isinstance(alt_prompt, str):
+                alt_prompt = [alt_prompt]
+
+            for current_prompt in alt_prompt:
+                if len(alt_mode) <= 2:
+                    current_prompt = prompt + ". "+ current_prompt
+                    change_over_step = float(alt_mode)
+                    temporal_prompt_weight_list = [0 if i >= change_over_step else 1 for i in range(num_inference_steps)]
+                elif len(alt_mode) <= 4:
+                    current_prompt = prompt + ". "+ current_prompt
+                    change_over_step = int(num_inference_steps*float(alt_mode))
+                    temporal_prompt_weight_list = [0 if i >= change_over_step else 1 for i in range(num_inference_steps)]
+                elif alt_mode == "alternating":
+                    temporal_prompt_weight_list = [0 if i % 2 == 0 else 1 for i in range(num_inference_steps)]      
+                elif alt_mode == "decreasing":
+                    temporal_prompt_weight_list = sigmoid(np.arange(start=1*prompt_blend_start, stop=-1*prompt_blend_end, step=-1*blend_step_size))      
+                elif alt_mode == "increasing":
+                    temporal_prompt_weight_list = sigmoid(np.arange(start=1*prompt_blend_start, stop=-1*prompt_blend_end, step=-1*blend_step_size))
+                    temporal_prompt_weight_list = temporal_prompt_weight_list[::-1]
+                elif alt_mode[:6] == "switch" or alt_mode[:5] == "delay":
+                    change_over_step = int(num_inference_steps*float(alt_mode[-3:-1])/100)
+                    temporal_prompt_weight_list = [0 if i >= change_over_step else 1 for i in range(num_inference_steps)]      
+                elif alt_mode[:6] == "weight":
+                    weight = 1-float(alt_mode[-2:])/100
+                    temporal_prompt_weight_list = [weight for i in range(num_inference_steps)]  
+                elif alt_mode[:6] == "mirror" or alt_mode[:6] == "rotate":
+                    current_prompt = prompt + ". "+ current_prompt
+                    change_over_step = alt_mode_warm_up    
+                else:
+                    temporal_prompt_weight_list = [1 for i in range(num_inference_steps)]
+                alt_prompt_list.append(current_prompt)
+            #print(temporal_prompt_weight_list, alt_mode, alt_prompt_list)
         text_embeddings = self._encode_prompt(
-            prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt, alt_prompt, alt_mode, nudge_text_concept
+            prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt, alt_prompt_list
         )
+        
+        latent_multiplier = 2
+        if nudge_text_concept is not None and pan_stride ==0:
+            latent_multiplier +=1
+        if alt_prompt is not None:
+            latent_multiplier +=1  
+
+        guidance_scale_mimic = dynamic_scale_mimic  
+        threshold_percentile = dynamic_scale_threshold_percentile        
+        guidance_scale_list = []
+        
+        guidance_scale_list = get_dynamic_scale(num_inference_steps,guidance_scale,dynamic_scale_factor)
+        #guidance_scale_list.append(guidance_scale_)
         
         # 4. Prepare timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)
@@ -674,15 +721,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
         # 7. Denoising loop
-                
-        latent_multiplier = 2
-        if pan_stride == 0 and nudge_text_concept is not None:
-            latent_multiplier +=1
-        if alt_prompt is not None:
-            latent_multiplier +=1   
 
-            
-            
         ### SaferDiffusion ###
         """MIT License
         Copyright (c) 2022 Manuel Brack
@@ -713,52 +752,6 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         
         ### End SaferDiffusion ###
 
-        ### Start Dynamic Scale ###
-        """The MIT License (MIT)
-
-        Copyright (c) 2023 Alex "mcmonkey" Goodwin
-
-        Permission is hereby granted, free of charge, to any person obtaining a copy
-        of this software and associated documentation files (the "Software"), to deal
-        in the Software without restriction, including without limitation the rights
-        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-        copies of the Software, and to permit persons to whom the Software is
-        furnished to do so, subject to the following conditions:
-
-        The above copyright notice and this permission notice shall be included in all
-        copies or substantial portions of the Software.
-
-        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-        SOFTWARE."""
-        guidance_scale_mimic = dynamic_scale_mimic  
-        threshold_percentile = dynamic_scale_threshold_percentile        
-        guidance_list = []
-
-        def modify_scale(step, min, scale=guidance_scale):
-            scale -= min
-            max = num_inference_steps - 1
-            scale *= math.pow(step / max, dynamic_scale_factor)
-            scale += min
-            return round(scale,3)
-            
-        for i in range (0,num_inference_steps):
-            if dynamic_scale_factor == 0:
-                modified_scale = guidance_scale
-            elif guidance_scale >=9:
-                modified_scale = modify_scale(i, 5)          
-            elif guidance_scale <=5:
-                modified_scale = modify_scale(i, guidance_scale, guidance_scale*1.5)            
-            else: 
-                modified_scale = modify_scale(i, guidance_scale-1, guidance_scale+1)
-            guidance_list.extend([modified_scale]) 
-
-        ### End Dynamic Scale ###
-
         ### Start Panorama Diffusion ###
         if  pan_stride > 0:
             window_size=pan_window_size//8
@@ -768,7 +761,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             if pan_stride > pan_window_size:
                 stride=window_size
             else:
-                stride=int(pan_stride/8)
+                stride=pan_stride//8
 
             views = get_views(pan_height, pan_width, window_size, stride)
             count = torch.zeros_like(latents)
@@ -788,12 +781,12 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             if height == width or height > width:
                 blend_step_size = (prompt_blend_start+prompt_blend_end)/num_blocks_height
                 prompt_weight_list = sigmoid(np.arange(start=1*prompt_blend_start, stop=-1*prompt_blend_end, step=-1*blend_step_size))
-                prompt_weight_list =prompt_weight_list.round(3)
+                prompt_weight_list =prompt_weight_list.round(2)
                 prompt_weight_list = np.repeat(prompt_weight_list, repeats=num_blocks_width, axis=0)
             else:
                 blend_step_size = (prompt_blend_start+prompt_blend_end)/num_blocks_width
                 prompt_weight_list = sigmoid(np.arange(start=1*prompt_blend_start, stop=-1*prompt_blend_end, step=-1*blend_step_size))
-                prompt_weight_list =prompt_weight_list.reshape(-1,1).round(3)
+                prompt_weight_list =prompt_weight_list.reshape(-1,1).round(2)
                 prompt_weight_list = np.repeat(prompt_weight_list, repeats=num_blocks_height, axis=1)
                 prompt_weight_list = prompt_weight_list.T.flatten()
                                             
@@ -812,6 +805,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                         latent_model_input = torch.cat([latent_view] * latent_multiplier)
                         latent_model_input = latent_model_input.to(torch.float16)
                         # predict the noise residual
+                        
                         noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
 
                         # perform guidance
@@ -821,7 +815,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                         else:
                             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                                             
-                        guidance_scale = guidance_list[i]
+                        guidance_scale = guidance_scale_list[i]
                         noise_pred = noise_pred_text + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                         # compute the denoising step with the reference model
@@ -862,16 +856,8 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                         ### Alternative Prompt###
                         if alt_prompt is None:
                             None
-                        elif alt_mode == "alternating" and i % 2 > 0:
-                            noise_pred_text = noise_pred_alt_text
-                        elif alt_mode == "increasing B":
-                            noise_pred_text = (noise_pred_text*((num_inference_steps-i)/num_inference_steps)+noise_pred_alt_text*(i/num_inference_steps))
-                        elif alt_mode == "decreasing B":
-                            noise_pred_text = (noise_pred_alt_text*((num_inference_steps-i)/num_inference_steps)+noise_pred_text*(i/num_inference_steps))
-                        elif alt_mode == "weight":
-                            noise_pred_text = (noise_pred_text*(100-change_over_step)/100+noise_pred_alt_text*(change_over_step)/100)
-                        elif i > change_over_step:
-                            noise_pred_text = noise_pred_alt_text
+                        else:
+                            noise_pred_text = (noise_pred_text*(temporal_prompt_weight_list[i])+noise_pred_alt_text*(1-temporal_prompt_weight_list[i]))
                         ### End Alternative Prompt###
 
                         noise_guidance = (noise_pred_text - noise_pred_uncond)
@@ -918,7 +904,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                             noise_guidance = noise_guidance - noise_guidance_safety
                         ### End SaferDiffusion ###
                         ### Start Dynamic Scale ###                    
-                        guidance_scale = guidance_list[i]
+                        guidance_scale = guidance_scale_list[i]
                         noise_pred = noise_pred_uncond + guidance_scale * noise_guidance
                         noise_pred_mimic = noise_pred_uncond + guidance_scale_mimic * noise_guidance
                         ### If we weren't doing mimic scale, we'd just return noise_pred here
@@ -983,7 +969,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
         OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
         SOFTWARE."""    
-        if width*height >= post_process_window_size*post_process_window_size:
+        if width*height > post_process_window_size*post_process_window_size:
             vae_image_window = int(post_process_window_size)
             image_offset = vae_image_window//2
             # decode latents in small squares using less passes than denoising
