@@ -21,6 +21,7 @@ torch.backends.cudnn.benchmark = True
 
 import math
 import numpy as np
+import PIL
 
 from diffusers.utils import is_accelerate_available
 from packaging import version
@@ -37,12 +38,32 @@ from diffusers.schedulers import (
     LMSDiscreteScheduler,
     PNDMScheduler,
 )
-from diffusers.utils import deprecate, logging
+from diffusers.utils import PIL_INTERPOLATION, deprecate, logging
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+def preprocess(image):
+    if isinstance(image, torch.Tensor):
+        return image
+    elif isinstance(image, PIL.Image.Image):
+        image = [image]
+
+    if isinstance(image[0], PIL.Image.Image):
+        w, h = image[0].size
+        w, h = map(lambda x: x - x % 32, (w, h))  # resize to integer multiple of 32
+
+        image = [np.array(i.resize((w, h), resample=PIL_INTERPOLATION["lanczos"]))[None, :] for i in image]
+        image = np.concatenate(image, axis=0)
+        image = np.array(image).astype(np.float32) / 255.0
+        image = image.transpose(0, 3, 1, 2)
+        image = 2.0 * image - 1.0
+        image = torch.from_numpy(image)
+    elif isinstance(image[0], torch.Tensor):
+        image = torch.cat(image, dim=0)
+    return image
 
 ### Start Panorama Diffusion ###
 # Copyright 2023 MultiDiffusion Authors. All rights reserved."
@@ -529,7 +550,71 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                 f"`callback_steps` has to be a positive integer but is {callback_steps} of type"
                 f" {type(callback_steps)}."
             )
+            
+    def get_timesteps_img2img(self, num_inference_steps, strength, device):
+        # get the original timestep using init_timestep
+        init_timestep = min(int(num_inference_steps * strength), num_inference_steps)
 
+        t_start = max(num_inference_steps - init_timestep, 0)
+        timesteps = self.scheduler.timesteps[t_start:]
+
+        return timesteps, num_inference_steps - t_start
+
+    def prepare_latents_img2img(self, image, timestep, batch_size, num_images_per_prompt, dtype, device, generator=None):
+        image = image.to(device=device, dtype=dtype)
+
+        batch_size = batch_size * num_images_per_prompt
+        if isinstance(generator, list) and len(generator) != batch_size:
+            raise ValueError(
+                f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
+                f" size of {batch_size}. Make sure the batch size matches the length of the generators."
+            )
+
+        if isinstance(generator, list):
+            init_latents = [
+                self.vae.encode(image[i : i + 1]).latent_dist.sample(generator[i]) for i in range(batch_size)
+            ]
+            init_latents = torch.cat(init_latents, dim=0)
+        else:
+            init_latents = self.vae.encode(image).latent_dist.sample(generator)
+
+        init_latents = 0.18215 * init_latents
+
+        if batch_size > init_latents.shape[0] and batch_size % init_latents.shape[0] == 0:
+            # expand init_latents for batch_size
+            deprecation_message = (
+                f"You have passed {batch_size} text prompts (`prompt`), but only {init_latents.shape[0]} initial"
+                " images (`image`). Initial images are now duplicating to match the number of text prompts. Note"
+                " that this behavior is deprecated and will be removed in a version 1.0.0. Please make sure to update"
+                " your script to pass as many initial images as text prompts to suppress this warning."
+            )
+            deprecate("len(prompt) != len(image)", "1.0.0", deprecation_message, standard_warn=False)
+            additional_image_per_prompt = batch_size // init_latents.shape[0]
+            init_latents = torch.cat([init_latents] * additional_image_per_prompt, dim=0)
+        elif batch_size > init_latents.shape[0] and batch_size % init_latents.shape[0] != 0:
+            raise ValueError(
+                f"Cannot duplicate `image` of batch size {init_latents.shape[0]} to {batch_size} text prompts."
+            )
+        else:
+            init_latents = torch.cat([init_latents], dim=0)
+
+        rand_device = "cpu" if device.type == "mps" else device
+        shape = init_latents.shape
+        if isinstance(generator, list):
+            shape = (1,) + shape[1:]
+            noise = [
+                torch.randn(shape, generator=generator[i], device=rand_device, dtype=dtype) for i in range(batch_size)
+            ]
+            noise = torch.cat(noise, dim=0).to(device)
+        else:
+            noise = torch.randn(shape, generator=generator, device=rand_device, dtype=dtype).to(device)
+
+        # get latents
+        init_latents = self.scheduler.add_noise(init_latents, noise, timestep)
+        latents = init_latents
+
+        return latents
+    
     def prepare_latents(self, batch_size, num_channels_latents, height, width, dtype, device, generator, latents=None):
         shape = (batch_size, num_channels_latents, height // self.vae_scale_factor, width // self.vae_scale_factor)
         if isinstance(generator, list) and len(generator) != batch_size:
@@ -580,6 +665,8 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         alt_mode: Optional[str] = "0.15",
         alt_mode_warm_up: Optional[int] = 3,
         alt_mode_cool_down: Optional[int] = 0,
+        image: Optional[Union[torch.FloatTensor, PIL.Image.Image]] = None,
+        strength: Optional[float] = 0.0,
         cross_fade: Optional[Union[int, List[int]]] = 7,        
         dynamic_scale_factor: Optional[int] = 4,
         dynamic_scale_mimic: Optional[float] = 7,  
@@ -657,6 +744,15 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             alt_mode  (`str`, *optional*, defaults to "0.15"):
                 How the additonal noise channel should be used.
                 #64, 128, 192
+            image (`torch.FloatTensor` or `PIL.Image.Image`):
+                `Image`, or tensor representing an image batch, that will be used as the starting point for the
+                process.
+            strength (`float`, *optional*, defaults to 0.8):
+                Conceptually, indicates how much to transform the reference `image`. Must be between 0 and 1. `image`
+                will be used as a starting point, adding more noise to it the larger the `strength`. The number of
+                denoising steps depends on the amount of noise initially added. When `strength` is 1, added noise will
+                be maximum and the denoising process will run for the full number of iterations specified in
+                `num_inference_steps`. A value of 1, therefore, essentially ignores `image`.
             editing_prompt (`str` or `List[str]`, *optional*):
                 The prompt or prompts to use for Semantic guidance. Semantic guidance is disabled by setting
                 `editing_prompt = None`. Guidance direction of prompt should be specified via
@@ -843,22 +939,36 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         guidance_scale_list = get_dynamic_scale(num_inference_steps,guidance_scale,dynamic_scale_factor)
         #guidance_scale_list.append(guidance_scale_)
         
-        # 4. Prepare timesteps
-        self.scheduler.set_timesteps(num_inference_steps, device=device)
-        timesteps = self.scheduler.timesteps
+        if strength>0.0:
+            # 4. Preprocess image
+            image = preprocess(image)
 
-        # 5. Prepare latent variables
-        num_channels_latents = self.unet.in_channels
-        latents = self.prepare_latents(
-            batch_size * num_images_per_prompt,
-            num_channels_latents,
-            height,
-            width,
-            text_embeddings.dtype,
-            device,
-            generator,
-            latents,
-        )
+            # 5. set timesteps
+            self.scheduler.set_timesteps(num_inference_steps, device=device)
+            timesteps, num_inference_steps = self.get_timesteps_img2img(num_inference_steps, strength, device)
+            latent_timestep = timesteps[:1].repeat(batch_size * num_images_per_prompt)
+
+            # 6. Prepare latent variables
+            latents = self.prepare_latents_img2img(
+                image, latent_timestep, batch_size, num_images_per_prompt, text_embeddings.dtype, device, generator
+            )
+        else:
+            # 4. Prepare timesteps
+            self.scheduler.set_timesteps(num_inference_steps, device=device)
+            timesteps = self.scheduler.timesteps
+
+            # 5. Prepare latent variables
+            num_channels_latents = self.unet.in_channels
+            latents = self.prepare_latents(
+                batch_size * num_images_per_prompt,
+                num_channels_latents,
+                height,
+                width,
+                text_embeddings.dtype,
+                device,
+                generator,
+                latents,
+            )
 
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
