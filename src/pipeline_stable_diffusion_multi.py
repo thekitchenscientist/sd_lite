@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import inspect
+from itertools import repeat
 from typing import Callable, List, Optional, Union
 
 import torch
@@ -304,7 +305,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
 
-    def _encode_prompt(self, prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt, alt_prompt_list):
+    def _encode_prompt(self, prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt, alt_prompt_list, enable_edit_guidance, editing_prompt_prompt_embeddings, editing_prompt):
         r"""
         Encodes the prompt into text encoder hidden states.
 
@@ -402,8 +403,9 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             uncond_embeddings = uncond_embeddings.repeat(1, num_images_per_prompt, 1)
             uncond_embeddings = uncond_embeddings.view(batch_size * num_images_per_prompt, seq_len, -1)
 
+            
+            text_embeddings_list = [uncond_embeddings, text_embeddings]            
             ### AlternativePrompt ###
-            text_embeddings_list = [uncond_embeddings, text_embeddings]
             
             # get alt_prompt text embeddings
             if len(alt_prompt_list) > 0:
@@ -433,9 +435,43 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                     alt_prompt_embeddings = alt_prompt_embeddings.view(batch_size * num_images_per_prompt, seq_len, -1)
                     
                     text_embeddings_list.append(alt_prompt_embeddings)
-
-            text_embeddings = torch.cat(text_embeddings_list)
             ### End AlternativePrompt ###   
+            
+            ### SEGA ###
+            if enable_edit_guidance:
+                # get safety text embeddings
+                if editing_prompt_prompt_embeddings is None:
+                    edit_concepts_input = self.tokenizer(
+                        [x for item in editing_prompt for x in repeat(item, batch_size)],
+                        padding="max_length",
+                        max_length=self.tokenizer.model_max_length,
+                        return_tensors="pt",
+                    )
+
+                    edit_concepts_input_ids = edit_concepts_input.input_ids
+
+                    if edit_concepts_input_ids.shape[-1] > self.tokenizer.model_max_length:
+                        removed_text = self.tokenizer.batch_decode(
+                            edit_concepts_input_ids[:, self.tokenizer.model_max_length :]
+                        )
+                        logger.warning(
+                            "The following part of your input was truncated because CLIP can only handle sequences up to"
+                            f" {self.tokenizer.model_max_length} tokens: {removed_text}"
+                        )
+                        edit_concepts_input_ids = edit_concepts_input_ids[:, : self.tokenizer.model_max_length]
+                    edit_concepts = self.text_encoder(edit_concepts_input_ids.to(self.device))[0]
+                else:
+                    edit_concepts = editing_prompt_prompt_embeddings.to(self.device).repeat(batch_size, 1, 1)
+
+                # duplicate text embeddings for each generation per prompt, using mps friendly method
+                bs_embed_edit, seq_len_edit, _ = edit_concepts.shape
+                edit_concepts = edit_concepts.repeat(1, num_images_per_prompt, 1)
+                edit_concepts = edit_concepts.view(bs_embed_edit * num_images_per_prompt, seq_len_edit, -1)
+            
+                text_embeddings_list.append(edit_concepts)                    
+                    
+            text_embeddings = torch.cat(text_embeddings_list)
+
                         
             # For classifier free guidance, we need to do two forward passes.
             # Here we concatenate the unconditional and text embeddings into a single batch
@@ -546,13 +582,29 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         alt_mode_cool_down: Optional[int] = 0,
         cross_fade: Optional[Union[int, List[int]]] = 7,        
         dynamic_scale_factor: Optional[int] = 4,
-        dynamic_scale_mimic: Optional[float]  = 7,  
+        dynamic_scale_mimic: Optional[float] = 7,  
         dynamic_scale_threshold_percentile: Optional[float] = 0.9,   
         pan_window_size: Optional[int] = 512, 
         pan_stride: Optional[int] = 0,
         post_process_window_size: Optional[int] = 512,
         post_process_recombine_image: bool = True,
-        nudge_text_concept: Optional[str] = 'hate, harassment, violence, suffering, humiliation, harm, suicide, sexual, nudity, bodily fluids, blood, obscene gestures, illegal activity, drug use, theft, vandalism, weapons, child abuse, brutality, cruelty'
+        editing_prompt: Optional[Union[str, List[str]]] = None,
+        editing_prompt_prompt_embeddings=None,
+        reverse_editing_direction: Optional[Union[bool, List[bool]]] = False,
+        edit_guidance_scale: Optional[Union[float, List[float]]] = 500,
+        edit_warmup_steps: Optional[Union[int, List[int]]] = 10,
+        edit_cooldown_steps: Optional[Union[int, List[int]]] = None,
+        edit_threshold: Optional[Union[float, List[float]]] = None,
+        edit_momentum_scale: Optional[float] = 0.1,
+        edit_mom_beta: Optional[float] = 0.4,
+        edit_weights: Optional[List[float]] = None,
+        sem_guidance = None,
+        sld_concept: Optional[str] = 'hate, harassment, violence, suffering, humiliation, harm, suicide, sexual, nudity, bodily fluids, blood, obscene gestures, illegal activity, drug use, theft, vandalism, weapons, child abuse, brutality, cruelty',
+        sld_guidance_scale: Optional[int] = 5000,
+        sld_warmup_steps = 7,
+        sld_threshold: Optional[float] = 0.01,
+        sld_momentum_scale: Optional[float] = 0.5,
+        sld_mom_beta: Optional[float] = 0.7,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -605,8 +657,50 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             alt_mode  (`str`, *optional*, defaults to "0.15"):
                 How the additonal noise channel should be used.
                 #64, 128, 192
-            nudge_text_concept (`str`, *optional*, defaults to "harms identified by research")
-                Nude the generation away from the listed concepts. Requires in be active for at least 15 steps to be fully effective
+            editing_prompt (`str` or `List[str]`, *optional*):
+                The prompt or prompts to use for Semantic guidance. Semantic guidance is disabled by setting
+                `editing_prompt = None`. Guidance direction of prompt should be specified via
+                `reverse_editing_direction`.
+            reverse_editing_direction (`bool` or `List[bool]`, *optional*):
+                Whether the corresponding prompt in `editing_prompt` should be increased or decreased.
+            edit_guidance_scale (`float` or `List[float]`, *optional*, defaults to 5):
+                Guidance scale for semantic guidance. If provided as list values should correspond to `editing_prompt`.
+            edit_warmup_steps (`float` or `List[float]`, *optional*, defaults to 10):
+                Number of diffusion steps (for each prompt) for which semantic guidance will not be applied. Momentum
+                will still be calculated for those steps and applied once all warmup periods are over.
+            edit_cooldown_steps (`float` or `List[float]`, *optional*, defaults to 10):
+                Number of diffusion steps (for each prompt) after which semantic guidance will no longer be applied.
+            edit_threshold (`float` or `List[float]`, *optional*, defaults to `None`):
+                Threshold of semantic guidance.
+            edit_momentum_scale (`float`, *optional*, defaults to 0.1):
+                Scale of the momentum to be added to the semantic guidance at each diffusion step. If set to 0.0 momentum
+                will be disabled. Momentum is already built up during warmup, i.e. for diffusion steps smaller than
+                `sld_warmup_steps`. Momentum will only be added to latent guidance once all warmup periods are
+                finished.
+            edit_mom_beta (`float`, *optional*, defaults to 0.4):
+                Defines how semantic guidance momentum builds up. `edit_mom_beta` indicates how much of the previous
+                momentum will be kept. Momentum is already built up during warmup, i.e. for diffusion steps smaller
+                than `edit_warmup_steps`.
+            edit_weights (`List[float]`, *optional*, defaults to `None`):
+                Indicates how much each individual concept should influence the overall guidance. If no weights are
+                provided all concepts are applied equally.
+            sld_concept (`str`, *optional*, defaults to "harms identified by research")
+                Steer the generation away from the listed concepts. Requires to be active for at least 15 steps to be fully effective
+            sld_guidance_scale (`float`, *optional*, defaults to 1000):
+                The guidance scale of safe latent diffusion. If set to be less than 1, safety guidance will be disabled.
+            sld_warmup_steps (`int`, *optional*, defaults to 10):
+                Number of warmup steps for safety guidance. SLD will only be applied for diffusion steps greater
+                than `sld_warmup_steps`.
+            sld_threshold (`float`, *optional*, defaults to 0.01):
+                Threshold that separates the hyperplane between appropriate and inappropriate images.
+            sld_momentum_scale (`float`, *optional*, defaults to 0.3):
+                Scale of the SLD momentum to be added to the safety guidance at each diffusion step.
+                If set to 0.0 momentum will be disabled.  Momentum is already built up during warmup,
+                i.e. for diffusion steps smaller than `sld_warmup_steps`.
+            sld_mom_beta (`float`, *optional*, defaults to 0.4):
+                Defines how safety guidance momentum builds up. `sld_mom_beta` indicates how much of the previous
+                momentum will be kept. Momentum is already built up during warmup, i.e. for diffusion steps smaller than
+                `sld_warmup_steps`.                
             
 
         Returns:
@@ -632,9 +726,58 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # 3. Encode input prompt
+        ### SaferDiffusion & SEGA ###
+        """MIT License
+        Copyright (c) 2022 Manuel Brack
+
+        Permission is hereby granted, free of charge, to any person obtaining a copy
+        of this software and associated documentation files (the "Software"), to deal
+        in the Software without restriction, including without limitation the rights
+        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        copies of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+
+        The above copyright notice and this permission notice shall be included in all
+        copies or substantial portions of the Software.
+
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+        SOFTWARE.
+        
+        arXiv:2211.05105
+        Config δ sS λ sm βm
+        Hyp-Weak 15 200 0.0 0.0 -
+        Hyp-Medium 10 1000 0.01 0.3 0.4
+        Hyp-Strong 7 2000 0.025 0.5 0.7
+        Hyp-Max 0 5000 1.0 0.5 0.7
+        """   
+        
+           
+        safety_momentum = None
+        if num_inference_steps < 30 & sld_warmup_steps == 7:
+            sld_warmup_steps = int(num_inference_steps*0.2)
+            
+        #enabled_editing_prompts = 0
+        if editing_prompt:
+            enable_edit_guidance = True
+            if isinstance(editing_prompt, str):
+                editing_prompt = [editing_prompt]
+            enabled_editing_prompts = len(editing_prompt)
+        elif editing_prompt_prompt_embeddings is not None:
+            enable_edit_guidance = True
+            enabled_editing_prompts = editing_prompt_prompt_embeddings.shape[0]
+        else:
+            enabled_editing_prompts = 0
+            enable_edit_guidance = False
+        ### End SEGA ###
+         
         ### AlternativePrompt ###
-        if nudge_text_concept is not None and pan_stride ==0:
-            alt_prompt_list = [nudge_text_concept]
+        if sld_guidance_scale > 0 and pan_stride ==0:
+            alt_prompt_list = [sld_concept]
         else:
             alt_prompt_list = []
 
@@ -684,11 +827,11 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                 alt_prompt_list.append(current_prompt)
             #print(temporal_prompt_weight_list, alt_mode, alt_prompt_list)
         text_embeddings = self._encode_prompt(
-            prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt, alt_prompt_list
+            prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt, alt_prompt_list, enable_edit_guidance, editing_prompt_prompt_embeddings, editing_prompt
         )
         
         latent_multiplier = 2
-        if nudge_text_concept is not None and pan_stride ==0:
+        if sld_guidance_scale > 0 and pan_stride ==0:
             latent_multiplier +=1
         if alt_prompt is not None:
             latent_multiplier +=1  
@@ -720,37 +863,20 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
-        # 7. Denoising loop
+        # 7. Denoising loop 
+             
+        ### SEGA ###
+        latents_shape = (batch_size * num_images_per_prompt, self.unet.in_channels, height // 8, width // 8)
+        latents_dtype = text_embeddings.dtype
+        edit_momentum = None
+        #print(enable_edit_guidance,enabled_editing_prompts,editing_prompt)
 
-        ### SaferDiffusion ###
-        """MIT License
-        Copyright (c) 2022 Manuel Brack
-
-        Permission is hereby granted, free of charge, to any person obtaining a copy
-        of this software and associated documentation files (the "Software"), to deal
-        in the Software without restriction, including without limitation the rights
-        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-        copies of the Software, and to permit persons to whom the Software is
-        furnished to do so, subject to the following conditions:
-
-        The above copyright notice and this permission notice shall be included in all
-        copies or substantial portions of the Software.
-
-        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-        SOFTWARE."""        
-        safety_momentum = None
-        sld_guidance_scale = 5000
-        sld_warmup_steps = 2
-        sld_threshold = 0.01
-        sld_momentum_scale = 0.5
-        sld_mom_beta = 0.7
+        self.uncond_estimates = None
+        self.text_estimates = None
+        self.edit_estimates = None
+        self.sem_guidance = None
         
-        ### End SaferDiffusion ###
+        ### End SaferDiffusion & SEGA ###
 
         ### Start Panorama Diffusion ###
         if  pan_stride > 0:
@@ -837,9 +963,9 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             with self.progress_bar(total=num_inference_steps) as progress_bar:
                 for i, t in enumerate(timesteps):
                     # expand the latents if we are doing classifier free guidance
-                    latent_model_input = torch.cat([latents] * latent_multiplier) if do_classifier_free_guidance else latents
+                    latent_model_input = torch.cat([latents] * (latent_multiplier+ enabled_editing_prompts)) if do_classifier_free_guidance else latents
                     latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
-
+                    #print(latent_model_input.shape, t, text_embeddings.shape)
                     # predict the noise residual
                     noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
                     
@@ -847,19 +973,16 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                     if do_classifier_free_guidance:
                         #noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                         #noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-                        ### SaferDiffusion ###
-                        if alt_prompt is not None:
-                            noise_pred_uncond, noise_pred_text,noise_pred_safety_concept, noise_pred_alt_text = noise_pred.chunk(4)
-                        else:
-                            noise_pred_uncond, noise_pred_text,noise_pred_safety_concept = noise_pred.chunk(3)
                         
-                        ### Alternative Prompt###
-                        if alt_prompt is None:
-                            None
-                        else:
-                            noise_pred_text = (noise_pred_text*(temporal_prompt_weight_list[i])+noise_pred_alt_text*(1-temporal_prompt_weight_list[i]))
-                        ### End Alternative Prompt###
+                        noise_pred_out = noise_pred.chunk(latent_multiplier + enabled_editing_prompts)  # [b,4, 64, 64]
+                        noise_pred_uncond, noise_pred_text = noise_pred_out[0], noise_pred_out[1]
 
+                        ### Alternative Prompt ###
+                        if alt_prompt is not None:
+                            noise_pred_alt_text = noise_pred_out[latent_multiplier-1]
+                            noise_pred_text = (noise_pred_text*(temporal_prompt_weight_list[i])+noise_pred_alt_text*(1-temporal_prompt_weight_list[i]))
+                        ### End Alternative Prompt ###
+                        
                         noise_guidance = (noise_pred_text - noise_pred_uncond)
 
                         ### Mirroring and Rotation ###
@@ -875,34 +998,37 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                             noise_guidance = torch.rot90(torch.rot90(noise_guidance, dims=[2, 3]),dims=[2, 3])
                         ### End Mirroring and Rotation ###
 
+                        ### Start SaferDiffusion ###
+                        if sld_guidance_scale > 0:
+                            noise_pred_safety_concept = noise_pred_out[2]
+                            if safety_momentum is None:
+                                safety_momentum = torch.zeros_like(noise_guidance)
+                            #noise_pred_safety_concept = noise_pred_out[2]
 
-                        if safety_momentum is None:
-                            safety_momentum = torch.zeros_like(noise_guidance)
-                        #noise_pred_safety_concept = noise_pred_out[2]
+                            # Equation 6
+                            scale = torch.clamp(
+                                torch.abs((noise_pred_text - noise_pred_safety_concept)) * sld_guidance_scale, max=1.)
 
-                        # Equation 6
-                        scale = torch.clamp(
-                            torch.abs((noise_pred_text - noise_pred_safety_concept)) * sld_guidance_scale, max=1.)
+                            # Equation 6
+                            safety_concept_scale = torch.where(
+                                (noise_pred_text - noise_pred_safety_concept) >= sld_threshold,
+                                torch.zeros_like(scale), scale)
 
-                        # Equation 6
-                        safety_concept_scale = torch.where(
-                            (noise_pred_text - noise_pred_safety_concept) >= sld_threshold,
-                            torch.zeros_like(scale), scale)
+                            # Equation 4
+                            noise_guidance_safety = torch.mul(
+                                (noise_pred_safety_concept - noise_pred_uncond), safety_concept_scale)
 
-                        # Equation 4
-                        noise_guidance_safety = torch.mul(
-                            (noise_pred_safety_concept - noise_pred_uncond), safety_concept_scale)
+                            # Equation 7
+                            noise_guidance_safety = noise_guidance_safety + sld_momentum_scale * safety_momentum
 
-                        # Equation 7
-                        noise_guidance_safety = noise_guidance_safety + sld_momentum_scale * safety_momentum
+                            # Equation 8
+                            safety_momentum = sld_mom_beta * safety_momentum + (1 - sld_mom_beta) * noise_guidance_safety
 
-                        # Equation 8
-                        safety_momentum = sld_mom_beta * safety_momentum + (1 - sld_mom_beta) * noise_guidance_safety
-
-                        if i >= sld_warmup_steps: # Warmup
-                            # Equation 3
-                            noise_guidance = noise_guidance - noise_guidance_safety
+                            if i >= sld_warmup_steps: # Warmup
+                                # Equation 3
+                                noise_guidance = noise_guidance - noise_guidance_safety
                         ### End SaferDiffusion ###
+                            
                         ### Start Dynamic Scale ###                    
                         guidance_scale = guidance_scale_list[i]
                         noise_pred = noise_pred_uncond + guidance_scale * noise_guidance
@@ -937,6 +1063,162 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                         if orig_dtype not in [torch.float, torch.double]:
                             noise_pred = noise_pred.to(torch.float16)
                         ### End Dynamic Scale ###
+                                                
+                        
+                        ### SEGA ###
+                        noise_pred_edit_concepts = noise_pred_out[latent_multiplier:]    
+                        if self.uncond_estimates is None:
+                            self.uncond_estimates = torch.zeros((num_inference_steps+1, *noise_pred_uncond.shape))
+                        self.uncond_estimates[i] = noise_pred_uncond.detach().cpu()
+
+                        if self.text_estimates is None:
+                            self.text_estimates = torch.zeros((num_inference_steps+1, *noise_pred_text.shape))
+                        self.text_estimates[i] = noise_pred_text.detach().cpu()
+
+                        if self.edit_estimates is None and enable_edit_guidance:
+                            self.edit_estimates = torch.zeros((num_inference_steps+1, len(noise_pred_edit_concepts), *noise_pred_edit_concepts[0].shape))
+
+                        if self.sem_guidance is None:
+                            self.sem_guidance = torch.zeros((num_inference_steps + 1, *noise_pred_text.shape))
+                            
+                        if edit_momentum is None:
+                            edit_momentum = torch.zeros_like(noise_guidance)
+                    
+                        if enable_edit_guidance:
+                            noise_guidance = guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+                            concept_weights = torch.zeros(
+                                (len(noise_pred_edit_concepts), noise_guidance.shape[0]), device=self.device
+                            )
+                            noise_guidance_edit = torch.zeros(
+                                (len(noise_pred_edit_concepts), *noise_guidance.shape), device=self.device
+                            )
+                            # noise_guidance_edit = torch.zeros_like(noise_guidance)
+                            warmup_inds = []
+                            for c, noise_pred_edit_concept in enumerate(noise_pred_edit_concepts):
+                                self.edit_estimates[i, c] = noise_pred_edit_concept
+                                if isinstance(edit_guidance_scale, list):
+                                    edit_guidance_scale_c = edit_guidance_scale[c]
+                                else:
+                                    edit_guidance_scale_c = edit_guidance_scale
+
+                                if isinstance(edit_threshold, list):
+                                    edit_threshold_c = edit_threshold[c]
+                                else:
+                                    edit_threshold_c = edit_threshold
+                                if isinstance(reverse_editing_direction, list):
+                                    reverse_editing_direction_c = reverse_editing_direction[c]
+                                else:
+                                    reverse_editing_direction_c = reverse_editing_direction
+                                if edit_weights:
+                                    edit_weight_c = edit_weights[c]
+                                else:
+                                    edit_weight_c = 1.0
+                                if isinstance(edit_warmup_steps, list):
+                                    edit_warmup_steps_c = edit_warmup_steps[c]
+                                else:
+                                    edit_warmup_steps_c = edit_warmup_steps
+
+                                if isinstance(edit_cooldown_steps, list):
+                                    edit_cooldown_steps_c = edit_cooldown_steps[c]
+                                elif edit_cooldown_steps is None:
+                                    edit_cooldown_steps_c = i + 1
+                                else:
+                                    edit_cooldown_steps_c = edit_cooldown_steps
+                                if i >= edit_warmup_steps_c:
+                                    warmup_inds.append(c)
+                                if i >= edit_cooldown_steps_c:
+                                    noise_guidance_edit[c, :, :, :, :] = torch.zeros_like(noise_pred_edit_concept)
+                                    continue
+
+                                noise_guidance_edit_tmp = noise_pred_edit_concept - noise_pred_uncond
+                                # tmp_weights = (noise_pred_text - noise_pred_edit_concept).sum(dim=(1, 2, 3))
+                                tmp_weights = (noise_guidance - noise_pred_edit_concept).sum(dim=(1, 2, 3))
+
+                                tmp_weights = torch.full_like(tmp_weights, edit_weight_c) #* (1 / enabled_editing_prompts)
+                                if reverse_editing_direction_c:
+                                    noise_guidance_edit_tmp = noise_guidance_edit_tmp * -1
+                                concept_weights[c, :] = tmp_weights
+
+                                noise_guidance_edit_tmp = noise_guidance_edit_tmp * edit_guidance_scale_c
+
+                                if latents_dtype not in [torch.float, torch.double]:
+                                    noise_guidance_edit_tmp = noise_guidance_edit_tmp.float()
+                                tmp = torch.quantile(torch.abs(noise_guidance_edit_tmp).flatten(start_dim=2), edit_threshold_c, dim=2, keepdim=False)
+                                #noise_guidance_edit_tmp = noise_guidance_edit_tmp.type(orig_dtype)                        
+                                noise_guidance_edit_tmp = torch.where(
+                                    torch.abs(noise_guidance_edit_tmp) >= tmp[:, :, None, None]
+                                    , noise_guidance_edit_tmp
+                                    , torch.zeros_like(noise_guidance_edit_tmp)
+                                )
+
+                                noise_guidance_edit[c, :, :, :, :] = noise_guidance_edit_tmp
+
+
+                                # noise_guidance_edit = noise_guidance_edit + noise_guidance_edit_tmp
+
+                            warmup_inds = torch.tensor(warmup_inds).to(self.device)
+                            if len(noise_pred_edit_concepts) > warmup_inds.shape[0] > 0:
+                                concept_weights = concept_weights.to("cpu")  # Offload to cpu
+                                noise_guidance_edit = noise_guidance_edit.to("cpu")
+
+                                concept_weights_tmp = torch.index_select(concept_weights.to(self.device), 0, warmup_inds)
+                                concept_weights_tmp = torch.where(
+                                    concept_weights_tmp < 0, torch.zeros_like(concept_weights_tmp), concept_weights_tmp
+                                )
+                                concept_weights_tmp = concept_weights_tmp / concept_weights_tmp.sum(dim=0)
+                               # concept_weights_tmp = torch.nan_to_num(concept_weights_tmp)
+
+                                noise_guidance_edit_tmp = torch.index_select(
+                                    noise_guidance_edit.to(self.device), 0, warmup_inds
+                                )
+                                noise_guidance_edit_tmp = torch.einsum(
+                                    "cb,cbijk->bijk", concept_weights_tmp, noise_guidance_edit_tmp
+                                )
+                                noise_guidance_edit_tmp = noise_guidance_edit_tmp
+                                noise_guidance = noise_guidance + noise_guidance_edit_tmp
+
+                                self.sem_guidance[i] = noise_guidance_edit_tmp.detach().cpu()
+
+                                del noise_guidance_edit_tmp
+                                del concept_weights_tmp
+                                concept_weights = concept_weights.to(self.device)
+                                noise_guidance_edit = noise_guidance_edit.to(self.device)
+
+                            concept_weights = torch.where(
+                                concept_weights < 0, torch.zeros_like(concept_weights), concept_weights
+                            )
+
+                            concept_weights = torch.nan_to_num(concept_weights)
+                            noise_guidance_edit = torch.einsum("cb,cbijk->bijk", concept_weights, noise_guidance_edit)
+
+                            noise_guidance_edit = noise_guidance_edit + edit_momentum_scale * edit_momentum
+
+                            edit_momentum = edit_mom_beta * edit_momentum + (1 - edit_mom_beta) * noise_guidance_edit
+
+                            if warmup_inds.shape[0] == len(noise_pred_edit_concepts):
+                                noise_guidance = noise_guidance + noise_guidance_edit
+                                self.sem_guidance[i] = noise_guidance_edit.detach().cpu()
+
+                            noise_pred = noise_pred_uncond + noise_guidance
+
+                            #convert back to float16 if required
+                            if latents_dtype not in [torch.float, torch.double]:
+                                noise_pred = noise_pred.to(torch.float16)
+
+                        if sem_guidance is not None:
+                            if not enable_edit_guidance:
+                                noise_guidance = guidance_scale * (noise_pred_text - noise_pred_uncond)
+                            
+                            edit_guidance = sem_guidance[i].to(self.device)
+                            noise_guidance = noise_guidance + edit_guidance
+
+                            noise_pred = noise_pred_uncond + noise_guidance
+
+                            #convert back to float16 if required
+                            if latents_dtype not in [torch.float, torch.double]:
+                                noise_pred = noise_pred.to(torch.float16)
+                        ### End SEGA ###                            
 
                     # compute the previous noisy sample x_t -> x_t-1
                     latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
