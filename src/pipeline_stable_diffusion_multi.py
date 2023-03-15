@@ -65,6 +65,46 @@ def preprocess(image):
         image = torch.cat(image, dim=0)
     return image
 
+### Start stable-diffusion-videos ###
+# Copyright 2023 MultiDiffusion Authors. All rights reserved."
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+def slerp(t, v0, v1, DOT_THRESHOLD=0.9995):
+    """helper function to spherically interpolate two arrays v1 v2"""
+
+    if not isinstance(v0, np.ndarray):
+        inputs_are_torch = True
+        input_device = v0.device
+        v0 = v0.cpu().numpy()
+        v1 = v1.cpu().numpy()
+
+    dot = np.sum(v0 * v1 / (np.linalg.norm(v0) * np.linalg.norm(v1)))
+    if np.abs(dot) > DOT_THRESHOLD:
+        v2 = (1 - t) * v0 + t * v1
+    else:
+        theta_0 = np.arccos(dot)
+        sin_theta_0 = np.sin(theta_0)
+        theta_t = theta_0 * t
+        sin_theta_t = np.sin(theta_t)
+        s0 = np.sin(theta_0 - theta_t) / sin_theta_0
+        s1 = sin_theta_t / sin_theta_0
+        v2 = s0 * v0 + s1 * v1
+
+    if inputs_are_torch:
+        v2 = torch.from_numpy(v2).to(input_device)
+
+    return v2
+### End stable-diffusion-videos ###
+
 ### Start Panorama Diffusion ###
 # Copyright 2023 MultiDiffusion Authors. All rights reserved."
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -902,6 +942,12 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                     current_prompt = prompt + ". "+ current_prompt
                     change_over_step = int(num_inference_steps*float(alt_mode))
                     temporal_prompt_weight_list = [0 if i >= change_over_step else 1 for i in range(num_inference_steps)]
+                elif alt_mode[:4]=="walk" or alt_mode=="crossfade":
+                    current_prompt = prompt + ", "+ current_prompt
+                    temporal_prompt_weight_list = [1 for i in range(num_inference_steps)]
+                elif alt_mode=="stack":
+                    current_prompt = current_prompt + ", "+ prompt
+                    temporal_prompt_weight_list = [1 for i in range(num_inference_steps)]
                 elif alt_mode == "alternating":
                     temporal_prompt_weight_list = [0 if i % 2 == 0 else 1 for i in range(num_inference_steps)]      
                 elif alt_mode == "decreasing":
@@ -921,7 +967,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                 else:
                     temporal_prompt_weight_list = [1 for i in range(num_inference_steps)]
                 alt_prompt_list.append(current_prompt)
-            #print(temporal_prompt_weight_list, alt_mode, alt_prompt_list)
+            #print(alt_mode, alt_prompt_list)
         text_embeddings = self._encode_prompt(
             prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt, alt_prompt_list, enable_edit_guidance, editing_prompt_prompt_embeddings, editing_prompt
         )
@@ -930,7 +976,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         if sld_guidance_scale > 0 and pan_stride ==0:
             latent_multiplier +=1
         if alt_prompt is not None:
-            latent_multiplier +=1  
+            latent_multiplier +=len(alt_prompt)  
 
         guidance_scale_mimic = dynamic_scale_mimic  
         threshold_percentile = dynamic_scale_threshold_percentile        
@@ -990,6 +1036,16 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
 
         ### Start Panorama Diffusion ###
         if  pan_stride > 0:
+            if alt_mode[:4]=="walk":
+                walk_steps = int(alt_mode[5:])
+                walk_stops = len(alt_prompt)
+                width = int(width * (walk_steps*(walk_stops-1)+walk_stops))
+                temp_canvas = torch.zeros(num_images_per_prompt,4,height//8,width//8).cuda()
+                temp_views = get_views(height//8,width//8, pan_window_size//8, pan_stride//8)
+                for h_start, h_end, w_start, w_end in temp_views:
+                    temp_canvas[:, :, h_start:h_end, w_start:w_end] += latents
+                latents=temp_canvas.to(torch.float16)
+                
             window_size=pan_window_size//8
             pan_height = height//8
             pan_width = width//8
@@ -1007,24 +1063,49 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             num_blocks_height = (pan_height - window_size) // stride + 1
             num_blocks_width = (pan_width - window_size) // stride + 1
                         
-            prompt_weight_list = []
-            if isinstance(cross_fade,list):
-                prompt_blend_start = cross_fade[0]
-                prompt_blend_end = cross_fade[1]
-            else:
-                prompt_blend_start = prompt_blend_end = cross_fade
-                
-            if height == width or height > width:
-                blend_step_size = (prompt_blend_start+prompt_blend_end)/num_blocks_height
-                prompt_weight_list = sigmoid(np.arange(start=1*prompt_blend_start, stop=-1*prompt_blend_end, step=-1*blend_step_size))
-                prompt_weight_list =prompt_weight_list.round(2)
-                prompt_weight_list = np.repeat(prompt_weight_list, repeats=num_blocks_width, axis=0)
-            else:
-                blend_step_size = (prompt_blend_start+prompt_blend_end)/num_blocks_width
-                prompt_weight_list = sigmoid(np.arange(start=1*prompt_blend_start, stop=-1*prompt_blend_end, step=-1*blend_step_size))
-                prompt_weight_list =prompt_weight_list.reshape(-1,1).round(2)
-                prompt_weight_list = np.repeat(prompt_weight_list, repeats=num_blocks_height, axis=1)
-                prompt_weight_list = prompt_weight_list.T.flatten()
+            prompt_weight_list = [1 for i in range(len(views))]
+            
+            if alt_mode[:4]=="walk":
+                walk_weight_list = np.linspace(0.0, 1.0, walk_steps+2)
+                walk_embeds_list = []
+                walk_text_embeddings = text_embeddings.chunk(latent_multiplier)
+                current_stop=2
+                for i in range(walk_stops-1):
+                    for j, weights in enumerate(walk_weight_list):
+                        if j ==walk_steps+1 and i < walk_stops-2:
+                            break
+                        embeds = torch.lerp(walk_text_embeddings[current_stop], walk_text_embeddings[current_stop+1], weights)
+                        walk_embeds_list.append(embeds)
+                    current_stop +=1
+                latent_multiplier = 2
+            elif alt_mode=="stack":
+                stack_text_embeddings = text_embeddings.chunk(latent_multiplier)
+                if num_blocks_width > num_blocks_height & num_blocks_height > 1:
+                    stack_text_embeddings=stack_text_embeddings*int(num_blocks_height)
+                elif num_blocks_height > num_blocks_width & num_blocks_width > 1:
+                    stack_text_embeddings=stack_text_embeddings*int(num_blocks_width)    
+                latent_multiplier = 2        
+            elif alt_mode=="crossfade":
+                if isinstance(cross_fade,list):
+                    prompt_blend_start = cross_fade[0]
+                    prompt_blend_end = cross_fade[1]
+                else:
+                    prompt_blend_start = prompt_blend_end = cross_fade
+
+                crossfade_text_embeddings = text_embeddings.chunk(latent_multiplier)
+                latent_multiplier = 3 
+
+                if height == width or height > width:
+                    blend_step_size = (prompt_blend_start+prompt_blend_end)/num_blocks_height
+                    prompt_weight_list = sigmoid(np.arange(start=1*prompt_blend_start, stop=-1*prompt_blend_end, step=-1*blend_step_size))
+                    prompt_weight_list =prompt_weight_list.round(2)
+                    prompt_weight_list = np.repeat(prompt_weight_list, repeats=num_blocks_width, axis=0)
+                else:
+                    blend_step_size = (prompt_blend_start+prompt_blend_end)/num_blocks_width
+                    prompt_weight_list = sigmoid(np.arange(start=1*prompt_blend_start, stop=-1*prompt_blend_end, step=-1*blend_step_size))
+                    prompt_weight_list =prompt_weight_list.reshape(-1,1).round(2)
+                    prompt_weight_list = np.repeat(prompt_weight_list, repeats=num_blocks_height, axis=1)
+                    prompt_weight_list = prompt_weight_list.T.flatten()
                                             
             num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
             with self.progress_bar(total=num_inference_steps) as progress_bar:
@@ -1041,15 +1122,24 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                         latent_model_input = torch.cat([latent_view] * latent_multiplier)
                         latent_model_input = latent_model_input.to(torch.float16)
                         # predict the noise residual
-                        
-                        noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
+                        if alt_mode[:4]=="walk":
+                            new_text_embeddings=torch.cat([walk_text_embeddings[0],walk_embeds_list[slice_count]])
+                        elif alt_mode=="stack":
+                            new_text_embeddings=torch.cat([stack_text_embeddings[0],stack_text_embeddings[slice_count+2]])
+                        elif alt_mode=="crossfade":
+                            new_text_embeddings=torch.cat([crossfade_text_embeddings[0],crossfade_text_embeddings[2],crossfade_text_embeddings[3]])
+                        else:
+                            new_text_embeddings=text_embeddings
+                            
+                        noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=new_text_embeddings).sample
 
                         # perform guidance
-                        if alt_prompt is not None:
-                            noise_pred_uncond, noise_pred_text, noise_pred_alt_text = noise_pred.chunk(3)
-                            noise_pred_text = noise_pred_text*(prompt_weight_list[slice_count])+noise_pred_alt_text*(1-prompt_weight_list[slice_count])
-                        else:
-                            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                        noise_pred_out = noise_pred.chunk(latent_multiplier)  # [b,4, 64, 64]
+                        noise_pred_uncond, noise_pred_text = noise_pred_out[0], noise_pred_out[1]
+                        if alt_prompt is not None and (alt_mode=="crossfade" or alt_mode=="stack"):
+                            noise_pred_alt_text = noise_pred_out[latent_multiplier-1]
+                            noise_pred_text = noise_pred_text*prompt_weight_list[slice_count]+noise_pred_alt_text*(1-prompt_weight_list[slice_count])
+
                                             
                         guidance_scale = guidance_scale_list[i]
                         noise_pred = noise_pred_text + guidance_scale * (noise_pred_text - noise_pred_uncond)
