@@ -175,8 +175,8 @@ def get_dynamic_scale(num_inference_steps,guidance_scale,dynamic_scale_factor):
     for i in range (num_inference_steps):
         if dynamic_scale_factor == 0:
             modified_scale = guidance_scale
-        elif guidance_scale >=7:
-            modified_scale = modify_scale(num_inference_steps,i, 5, dynamic_scale_factor, guidance_scale)          
+        elif guidance_scale >=9:
+            modified_scale = modify_scale(num_inference_steps,i, guidance_scale/2, dynamic_scale_factor, guidance_scale)          
         #elif guidance_scale <=5:
         #    modified_scale = modify_scale(num_inference_steps,i, guidance_scale, dynamic_scale_factor, guidance_scale*1.5)            
         else: 
@@ -690,7 +690,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         prompt: Union[str, List[str]],
         height: Optional[int] = None,
         width: Optional[int] = None,
-        num_inference_steps: int = 50,
+        num_inference_steps: int = 20,
         guidance_scale: float = 7.5,
         negative_prompt: Optional[Union[str, List[str]]] = None,
         num_images_per_prompt: Optional[int] = 1,
@@ -702,7 +702,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
         alt_prompt: Optional[Union[str, List[str]]] = None,
-        alt_mode: Optional[str] = "0.15",
+        alt_mode: Optional[str] = "0.2",
         alt_mode_warm_up: Optional[int] = 3,
         alt_mode_cool_down: Optional[int] = 0,
         image: Optional[Union[torch.FloatTensor, PIL.Image.Image]] = None,
@@ -931,9 +931,20 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
 
         if alt_prompt is not None:
             if isinstance(alt_prompt, str):
+                alt_prompt = [[alt_prompt]]
+            elif isinstance(alt_prompt[0], str):
                 alt_prompt = [alt_prompt]
+                
+            alt_prompt_to_embed =  [item for sublist in alt_prompt for item in sublist]
+            #print(alt_prompt_to_embed)
+            if alt_mode=="stack":
+                height = pan_stride*len(alt_prompt)+pan_stride//3
+                width = pan_stride*len(alt_prompt[0])+pan_stride//3
+            elif alt_mode=="multifade":
+                height = pan_stride*len(alt_prompt)+(pan_window_size-pan_stride)
+                width = pan_stride*len(alt_prompt[0])+(pan_window_size-pan_stride)
 
-            for current_prompt in alt_prompt:
+            for current_prompt in alt_prompt_to_embed:
                 if len(alt_mode) <= 2:
                     current_prompt = prompt + ". "+ current_prompt
                     change_over_step = float(alt_mode)
@@ -945,7 +956,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                 elif alt_mode[:4]=="walk" or alt_mode=="crossfade":
                     current_prompt = prompt + ", "+ current_prompt
                     temporal_prompt_weight_list = [1 for i in range(num_inference_steps)]
-                elif alt_mode=="stack":
+                elif alt_mode=="stack" or alt_mode=="multifade":
                     current_prompt = current_prompt + ", "+ prompt
                     temporal_prompt_weight_list = [1 for i in range(num_inference_steps)]
                 elif alt_mode == "alternating":
@@ -976,7 +987,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         if sld_guidance_scale > 0 and pan_stride ==0:
             latent_multiplier +=1
         if alt_prompt is not None:
-            latent_multiplier +=len(alt_prompt)  
+            latent_multiplier +=len(alt_prompt_to_embed)  
 
         guidance_scale_mimic = dynamic_scale_mimic  
         threshold_percentile = dynamic_scale_threshold_percentile        
@@ -1038,7 +1049,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         if  pan_stride > 0:
             if alt_mode[:4]=="walk":
                 walk_steps = int(alt_mode[5:])
-                walk_stops = len(alt_prompt)
+                walk_stops = len(alt_prompt[0])
                 width = int(width * (walk_steps*(walk_stops-1)+walk_stops))
                 temp_canvas = torch.zeros(num_images_per_prompt,4,height//8,width//8).cuda()
                 temp_views = get_views(height//8,width//8, pan_window_size//8, pan_stride//8)
@@ -1058,10 +1069,11 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             views = get_views(pan_height, pan_width, window_size, stride)
             count = torch.zeros_like(latents)
             value = torch.zeros_like(latents)
-            
+
             # prompt blending
             num_blocks_height = (pan_height - window_size) // stride + 1
             num_blocks_width = (pan_width - window_size) // stride + 1
+            overlap = 0
                         
             prompt_weight_list = [1 for i in range(len(views))]
             
@@ -1080,11 +1092,31 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                 latent_multiplier = 2
             elif alt_mode=="stack":
                 stack_text_embeddings = text_embeddings.chunk(latent_multiplier)
-                if num_blocks_width > num_blocks_height & num_blocks_height > 1:
-                    stack_text_embeddings=stack_text_embeddings*int(num_blocks_height)
-                elif num_blocks_height > num_blocks_width & num_blocks_width > 1:
-                    stack_text_embeddings=stack_text_embeddings*int(num_blocks_width)    
-                latent_multiplier = 2        
+                latent_multiplier = 2 
+            elif alt_mode=="multifade":
+                stack_text_embeddings = text_embeddings.chunk(latent_multiplier)
+                latent_multiplier = 2 
+                #workout region of overlap
+                overlap = (window_size-stride)
+                #create fade 
+                start = 1
+                stop = 0.1
+                step_size = (overlap)/(start+stop)
+
+                # create masks with gradients
+                left_latent_fade = np.arange(start=start, stop=stop, step=1/step_size)
+                left_latent_fade =left_latent_fade.reshape(-1,1)
+                up_alpha = np.repeat(left_latent_fade, repeats=window_size, axis=1)
+                #extent to size of window
+                pass_through = np.ones((stride+overlap,window_size))
+                top_mask = np.concatenate((up_alpha, pass_through), axis=0)
+                #rotate by 90
+                left_mask = np.rot90(top_mask)
+                left_top_mask = top_mask*left_mask
+                top_mask = torch.from_numpy(top_mask.copy()).cuda() 
+                left_mask = torch.from_numpy(left_mask.copy()).cuda() 
+                left_top_mask = torch.from_numpy(left_top_mask.copy()).cuda()
+                
             elif alt_mode=="crossfade":
                 if isinstance(cross_fade,list):
                     prompt_blend_start = cross_fade[0]
@@ -1124,8 +1156,9 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                         # predict the noise residual
                         if alt_mode[:4]=="walk":
                             new_text_embeddings=torch.cat([walk_text_embeddings[0],walk_embeds_list[slice_count]])
-                        elif alt_mode=="stack":
+                        elif alt_mode=="stack" or alt_mode=="multifade":
                             new_text_embeddings=torch.cat([stack_text_embeddings[0],stack_text_embeddings[slice_count+2]])
+                            #print(alt_prompt_list[slice_count])
                         elif alt_mode=="crossfade":
                             new_text_embeddings=torch.cat([crossfade_text_embeddings[0],crossfade_text_embeddings[2],crossfade_text_embeddings[3]])
                         else:
@@ -1146,7 +1179,15 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
 
                         # compute the denoising step with the reference model
                         latents_view_denoised = self.scheduler.step(noise_pred, t, latent_view).prev_sample
-                        value[:, :, h_start:h_end, w_start:w_end] += latents_view_denoised
+                        if alt_mode=="multifade":
+                            if h_start==0 and w_start >0:
+                                latents_view_denoised=latents_view_denoised*left_mask
+                            elif h_start>0 and w_start ==0:
+                                latents_view_denoised=latents_view_denoised*top_mask
+                            elif h_start>0 and w_start >0:
+                                latents_view_denoised=latents_view_denoised*left_top_mask
+
+                        value[:, :, h_start:h_end, w_start:w_end] += latents_view_denoised   
                         count[:, :, h_start:h_end, w_start:w_end] += 1
                         slice_count += 1
                     # take the MultiDiffusion step
