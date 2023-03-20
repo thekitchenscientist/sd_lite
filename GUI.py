@@ -16,7 +16,7 @@ sd_lite = gr.Blocks()
 with sd_lite:
     gr.Markdown(
         f"""
-          ## Stable Diffusion 2.1
+          ## Stable Diffusion Lite
 
           Press enter after typing in a text box to start the image generation process. The first time you trigger generation on the Sketch or Transform tab it will fail because the model is loading. Once its loaded simply click into a text box again and press enter.
         """)
@@ -52,16 +52,54 @@ with sd_lite:
             with gr.Column():
                 with gr.Row():
                     with gr.Column():
-                        morph_prompt = gr.Textbox(label="Prompt", show_label=False, lines=1, placeholder=f"What do you want to use for image A? (press enter to preview)")
-                        morph_prompt_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
+                        morph_prompt = gr.Textbox(label="Prompt (common across all images)", show_label=True, lines=1, placeholder=f"What should the images have in common?")
                     with gr.Column():
-                        morph_alt_prompt = gr.Textbox(label="Prompt", show_label=False, lines=1, placeholder=f"What do you want to use for image B? (press enter to preview)")
-                        morph_alt_prompt_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
+                        morph_anti_prompt = gr.Textbox(label="Negative prompt (common across all images)", show_label=True, lines=1, placeholder="What should the images avoid including?")
                 with gr.Row():
-                    morph_anti_prompt = gr.Textbox(label="Negative prompt (applied to all images)", show_label=True, lines=1, placeholder="What should the images avoid including?")
-                    morph_alt_mode = gr.Dropdown(label="Number of Morph Steps (pick one to start image generation)",choices=["5 smooth","10 smooth","15 smooth","30 smooth","45 smooth","60 smooth"])#,"5 coherent","10 coherent","15 coherent","30 coherent","45 coherent","60 coherent"])
+                    with gr.Column():
+                        morph_alt_prompt1 = gr.Textbox(label="1", show_label=False, lines=1, placeholder="What is the first subject?")
+                    with gr.Column():
+                        morph_alt_prompt2 = gr.Textbox(label="2", show_label=False, lines=1, placeholder="What is the second subject?")
+                    with gr.Column():
+                        morph_alt_prompt3 = gr.Textbox(label="3", show_label=False, lines=1, placeholder="What is the third subject? (optional)")
+                    with gr.Column():
+                        morph_alt_prompt4 = gr.Textbox(label="4", show_label=False, lines=1, placeholder="What is the fourth subject? (optional)")
+                with gr.Row():
+                    morph_alt_mode = gr.Dropdown(label="Number of Morph Steps (pick one to start image generation)",choices=["walk 1","walk 3","walk 5"])#,"5 coherent","10 coherent","15 coherent","30 coherent","45 coherent","60 coherent"])
                 with gr.Column():
-                    morph_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[5], height="auto")
+                    morph_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[1], height="auto")
+        with gr.TabItem("Pan"):
+            with gr.Column():
+                with gr.Row():
+                    with gr.Column():
+                        pan_prompt = gr.Textbox(label="Prompt (common across all images)", show_label=True, lines=1, placeholder=f"What should the images have in common?")
+                    with gr.Column():
+                        pan_anti_prompt = gr.Textbox(label="Negative prompt (common across all images)", show_label=True, lines=1, placeholder="What should the images avoid including?")
+                with gr.Row():
+                    with gr.Row():
+                        with gr.Column():
+                            pan_grid_prompt11 = gr.Textbox(label="11", show_label=False, lines=1, placeholder="What should be here?")
+                            pan_grid_prompt21 = gr.Textbox(label="21", show_label=False, lines=1, placeholder="What should be here?")
+                            pan_grid_prompt31 = gr.Textbox(label="1", show_label=False, lines=1, placeholder="What should be here?")
+                            pan_grid_prompt41 = gr.Textbox(label="1", show_label=False, lines=1, placeholder="What should be here?")
+                        with gr.Column():
+                            pan_grid_prompt12 = gr.Textbox(label="12", show_label=False, lines=1, placeholder="What should be here?")
+                            pan_grid_prompt22 = gr.Textbox(label="22", show_label=False, lines=1, placeholder="What should be here?")
+                            pan_grid_prompt32 = gr.Textbox(label="1", show_label=False, lines=1, placeholder="What should be here?")
+                            pan_grid_prompt42 = gr.Textbox(label="1", show_label=False, lines=1, placeholder="What should be here?")
+                        with gr.Column():
+                            pan_grid_prompt13 = gr.Textbox(label="13", show_label=False, lines=1, placeholder="What should be here?")
+                            pan_grid_prompt23 = gr.Textbox(label="23", show_label=False, lines=1, placeholder="What should be here?")
+                            pan_grid_prompt33 = gr.Textbox(label="1", show_label=False, lines=1, placeholder="What should be here?")
+                            pan_grid_prompt43 = gr.Textbox(label="1", show_label=False, lines=1, placeholder="What should be here?")
+                        with gr.Column():
+                            pan_grid_prompt14 = gr.Textbox(label="14", show_label=False, lines=1, placeholder="What should be here?")
+                            pan_grid_prompt24 = gr.Textbox(label="24", show_label=False, lines=1, placeholder="What should be here?")
+                            pan_grid_prompt34 = gr.Textbox(label="1", show_label=False, lines=1, placeholder="What should be here?")
+                            pan_grid_prompt44 = gr.Textbox(label="1", show_label=False, lines=1, placeholder="What should be here?")
+                with gr.Column():
+                    pan_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[5], height="auto")
+
         with gr.TabItem("Sketch"):
             with gr.Column():
                 with gr.Row():
@@ -85,17 +123,6 @@ with sd_lite:
                         transform_image_input = gr.Image(label="Image", show_label=False, type="pil")#, tool="sketch")
                     with gr.Column(scale=2.8):
                         transform_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
-            gr.Markdown("The model licence prohibits alterations of copyrighted or licensed material for which you do not have the rights. Read the conditions of the [Open RAIL++-M](https://huggingface.co/stabilityai/stable-diffusion-2/blob/main/LICENSE-MODEL) licence.")
-        with gr.TabItem("Edit"):
-            with gr.Column():
-                with gr.Row():
-                    edit_prompt = gr.Textbox(label="Prompt", show_label=False, lines=1, placeholder=f"What do you want to see?")
-                    edit_anti_prompt = gr.Textbox(label="Negative prompt", show_label=False, lines=1, placeholder="What should the image avoid including?")  
-                with gr.Row():  
-                    with gr.Column(scale=1.2):
-                        edit_image_input = gr.Image(label="Image", show_label=False, type="pil")#, tool="sketch")
-                    with gr.Column(scale=2.8):
-                        edit_gallery = gr.Gallery(label="Generated images", show_label=False).style(grid=[3], height="auto")
             gr.Markdown("The model licence prohibits alterations of copyrighted or licensed material for which you do not have the rights. Read the conditions of the [Open RAIL++-M](https://huggingface.co/stabilityai/stable-diffusion-2/blob/main/LICENSE-MODEL) licence.")
         with gr.TabItem("History"):
             with gr.Column():
@@ -121,18 +148,14 @@ with sd_lite:
     hybrid_alt_prompt_outputs = [hybrid_alt_prompt_gallery]
     hybrid_inputs = [hybrid_prompt, hybrid_anti_prompt, hybrid_alt_prompt, hybrid_alt_mode]
     hybrid_outputs = [hybrid_gallery]
-    morph_prompt_inputs = [morph_prompt, morph_anti_prompt]
-    morph_prompt_outputs = [morph_prompt_gallery]
-    morph_alt_prompt_inputs = [morph_alt_prompt, morph_anti_prompt]
-    morph_alt_prompt_outputs = [morph_alt_prompt_gallery]
-    morph_inputs = [morph_prompt, morph_anti_prompt, morph_alt_prompt, morph_alt_mode]
+    morph_inputs = [morph_prompt, morph_anti_prompt, morph_alt_mode, morph_alt_prompt1, morph_alt_prompt2, morph_alt_prompt3, morph_alt_prompt4]
     morph_outputs = [morph_gallery]
+    pan_inputs = [pan_prompt, pan_anti_prompt, pan_grid_prompt11,pan_grid_prompt12,pan_grid_prompt13,pan_grid_prompt14,pan_grid_prompt21,pan_grid_prompt22,pan_grid_prompt23,pan_grid_prompt24,pan_grid_prompt31,pan_grid_prompt32,pan_grid_prompt33,pan_grid_prompt34,pan_grid_prompt41,pan_grid_prompt42,pan_grid_prompt43,pan_grid_prompt44]
+    pan_outputs = [pan_gallery]
     sketch_inputs = [sketch_prompt, sketch_anti_prompt, sketch_image_input]
     sketch_outputs = [sketch_gallery]
     transform_inputs = [transform_prompt, transform_anti_prompt, transform_image_input]
     transform_outputs = [transform_gallery]
-    edit_inputs = [edit_prompt, edit_anti_prompt, edit_image_input]
-    edit_outputs = [edit_gallery]
     explore_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
     explore_anti_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
     explore_alt_prompt.submit(functions.txt2img_inference, inputs=explore_inputs, outputs=explore_outputs)
@@ -140,15 +163,13 @@ with sd_lite:
     hybrid_prompt.submit(functions.txt2img_inference, inputs=hybrid_prompt_inputs, outputs=hybrid_prompt_outputs)
     hybrid_alt_prompt.submit(functions.txt2img_inference, inputs=hybrid_alt_prompt_inputs, outputs=hybrid_alt_prompt_outputs)
     hybrid_alt_mode.change(functions.txt2img_inference, inputs=hybrid_inputs, outputs=hybrid_outputs)
-    morph_prompt.submit(functions.walk_inference, inputs=morph_prompt_inputs, outputs=morph_prompt_outputs)
-    morph_alt_prompt.submit(functions.walk_inference, inputs=morph_alt_prompt_inputs, outputs=morph_alt_prompt_outputs)
     morph_alt_mode.change(functions.walk_inference, inputs=morph_inputs, outputs=morph_outputs)
+    pan_prompt.submit(functions.pan_inference, inputs=pan_inputs, outputs=pan_outputs)
+    pan_anti_prompt.submit(functions.pan_inference, inputs=pan_inputs, outputs=pan_outputs)
     sketch_prompt.submit(functions.img2img_inference, inputs=sketch_inputs, outputs=sketch_outputs)
     sketch_anti_prompt.submit(functions.img2img_inference, inputs=sketch_inputs, outputs=sketch_outputs)
     transform_prompt.submit(functions.depth2img_inference, inputs=transform_inputs, outputs=transform_outputs)
     transform_anti_prompt.submit(functions.depth2img_inference, inputs=transform_inputs, outputs=transform_outputs)
-    edit_prompt.submit(functions.depth2img_inference, inputs=edit_inputs, outputs=edit_outputs)
-    edit_anti_prompt.submit(functions.depth2img_inference, inputs=edit_inputs, outputs=edit_outputs)
     history_config_choice.change(fn=lambda value: gr.update(value=functions.read_prompt_metadata(value)), inputs=history_config_choice, outputs=history_prompt_table)
     history_config_choice.change(fn=lambda value: gr.update(choices=[item[0] for item in functions.read_prompt_metadata(value)]), inputs=history_config_choice, outputs=prompt_config_choice)
     prompt_config_choice.change(fn=lambda value: gr.update(open=True), inputs=prompt_config_choice, outputs=history_show_image)
@@ -163,4 +184,4 @@ with sd_lite:
     history_to_transform.click(fn=lambda value: gr.update(value=functions.get_prompt_metadata(value)[0][2]), inputs=prompt_config_choice, outputs=transform_anti_prompt)
 
 sd_lite.queue()
-sd_lite.launch(debug=True, show_api=False)
+sd_lite.launch(debug=True, show_api=False, share=True)
