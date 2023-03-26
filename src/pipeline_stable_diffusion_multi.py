@@ -29,7 +29,7 @@ from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
 
 from diffusers.configuration_utils import FrozenDict
 from diffusers.models import AutoencoderKL, UNet2DConditionModel
-from diffusers.pipeline_utils import DiffusionPipeline
+from diffusers.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
 from diffusers.schedulers import (
     DDIMScheduler,
     DPMSolverMultistepScheduler,
@@ -40,7 +40,7 @@ from diffusers.schedulers import (
 )
 from diffusers.utils import PIL_INTERPOLATION, deprecate, logging
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
-from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
+
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -228,9 +228,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             EulerAncestralDiscreteScheduler,
             DPMSolverMultistepScheduler,
         ],
-        safety_checker: StableDiffusionSafetyChecker,
         feature_extractor: CLIPFeatureExtractor,
-        requires_safety_checker: bool = True,
     ):
         super().__init__()
 
@@ -261,22 +259,6 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             new_config["clip_sample"] = False
             scheduler._internal_dict = FrozenDict(new_config)
 
-        if safety_checker is None and requires_safety_checker:
-            logger.warning(
-                f"You have disabled the safety checker for {self.__class__} by passing `safety_checker=None`. Ensure"
-                " that you abide to the conditions of the Stable Diffusion license and do not expose unfiltered"
-                " results in services or applications open to the public. Both the diffusers team and Hugging Face"
-                " strongly recommend to keep the safety filter enabled in all public facing circumstances, disabling"
-                " it only for use-cases that involve analyzing network behavior or auditing its results. For more"
-                " information, please have a look at https://github.com/huggingface/diffusers/pull/254 ."
-            )
-
-        if safety_checker is not None and feature_extractor is None:
-            raise ValueError(
-                "Make sure to define a feature extractor when loading {self.__class__} if you want to use the safety"
-                " checker. If you do not want to use the safety checker, you can pass `'safety_checker=None'` instead."
-            )
-
         is_unet_version_less_0_9_0 = hasattr(unet.config, "_diffusers_version") and version.parse(
             version.parse(unet.config._diffusers_version).base_version
         ) < version.parse("0.9.0.dev0")
@@ -304,11 +286,9 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             tokenizer=tokenizer,
             unet=unet,
             scheduler=scheduler,
-            safety_checker=safety_checker,
             feature_extractor=feature_extractor,
         )
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
-        self.register_to_config(requires_safety_checker=requires_safety_checker)
 
     def enable_vae_slicing(self):
         r"""
@@ -541,16 +521,6 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
 
         return text_embeddings
 
-    def run_safety_checker(self, image, device, dtype):
-        if self.safety_checker is not None:
-            safety_checker_input = self.feature_extractor(self.numpy_to_pil(image), return_tensors="pt").to(device)
-            image, has_nsfw_concept = self.safety_checker(
-                images=image, clip_input=safety_checker_input.pixel_values.to(dtype)
-            )
-        else:
-            has_nsfw_concept = None
-        return image, has_nsfw_concept
-
     def decode_latents(self, latents):
         latents = 1 / 0.18215 * latents
         image = self.vae.decode(latents).sample
@@ -705,6 +675,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         alt_mode: Optional[str] = "0.2",
         alt_mode_warm_up: Optional[int] = 3,
         alt_mode_cool_down: Optional[int] = 0,
+        alt_mode_variants: Optional[int] = 0,
         image: Optional[Union[torch.FloatTensor, PIL.Image.Image]] = None,
         strength: Optional[float] = 0.0,
         cross_fade: Optional[Union[int, List[int]]] = 7,        
@@ -890,14 +861,11 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
         Hyp-Medium 10 1000 0.01 0.3 0.4
         Hyp-Strong 7 2000 0.025 0.5 0.7
         Hyp-Max 0 5000 1.0 0.5 0.7
-        """   
-        
-           
+        """           
         safety_momentum = None
         if num_inference_steps < 30 & sld_warmup_steps == 7:
             sld_warmup_steps = int(num_inference_steps*0.2)
-            
-        #enabled_editing_prompts = 0
+
         if editing_prompt:
             enable_edit_guidance = True
             if isinstance(editing_prompt, str):
@@ -923,8 +891,6 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             prompt_blend_end = cross_fade[1]
         else:
             prompt_blend_start = prompt_blend_end = cross_fade    
-        
-        change_over_step = int(num_inference_steps+1)
 
         # prepare the switch over for alt_prompt
         blend_step_size = (prompt_blend_start+prompt_blend_end)/num_inference_steps
@@ -936,13 +902,10 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                 alt_prompt = [alt_prompt]
                 
             alt_prompt_to_embed =  [item for sublist in alt_prompt for item in sublist]
-            #print(alt_prompt_to_embed)
+
             if alt_mode=="stack":
                 height = pan_stride*len(alt_prompt)+pan_stride//3
                 width = pan_stride*len(alt_prompt[0])+pan_stride//3
-            elif alt_mode=="multifade":
-                height = pan_stride*len(alt_prompt)+(pan_window_size-pan_stride)
-                width = pan_stride*len(alt_prompt[0])+(pan_window_size-pan_stride)
 
             for current_prompt in alt_prompt_to_embed:
                 if len(alt_mode) <= 2:
@@ -956,7 +919,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                 elif alt_mode[:4]=="walk" or alt_mode=="crossfade":
                     current_prompt = prompt + ", "+ current_prompt
                     temporal_prompt_weight_list = [1 for i in range(num_inference_steps)]
-                elif alt_mode=="stack" or alt_mode=="multifade":
+                elif alt_mode=="stack":
                     current_prompt = current_prompt + ", "+ prompt
                     temporal_prompt_weight_list = [1 for i in range(num_inference_steps)]
                 elif alt_mode == "alternating":
@@ -974,13 +937,19 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                     temporal_prompt_weight_list = [weight for i in range(num_inference_steps)]  
                 elif alt_mode[:6] == "mirror" or alt_mode[:6] == "rotate":
                     current_prompt = prompt + ". "+ current_prompt
-                    change_over_step = alt_mode_warm_up    
                 else:
                     temporal_prompt_weight_list = [1 for i in range(num_inference_steps)]
                 alt_prompt_list.append(current_prompt)
-            #print(alt_mode, alt_prompt_list)
+
+        ### Image Variants ###
+        padding = int(alt_mode_variants*8)
+        number_variants = 1
+        variant_list = [(0,height//8,0,width//8),(padding//8,(height+padding)//8,padding//8,(width+padding)//8),(0,height//8,padding//8,(width+padding)//8),(padding//8,(height+padding)//8,0,width//8)]        
+        if alt_mode_variants > 0 and pan_stride == 0:
+            number_variants = len(variant_list)
+                
         text_embeddings = self._encode_prompt(
-            prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt, alt_prompt_list, enable_edit_guidance, editing_prompt_prompt_embeddings, editing_prompt
+            prompt, device, num_images_per_prompt*number_variants, do_classifier_free_guidance, negative_prompt, alt_prompt_list, enable_edit_guidance, editing_prompt_prompt_embeddings, editing_prompt
         )
         
         latent_multiplier = 2
@@ -988,13 +957,9 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             latent_multiplier +=1
         if alt_prompt is not None:
             latent_multiplier +=len(alt_prompt_to_embed)  
-
-        guidance_scale_mimic = dynamic_scale_mimic  
-        threshold_percentile = dynamic_scale_threshold_percentile        
+      
         guidance_scale_list = []
-        
         guidance_scale_list = get_dynamic_scale(num_inference_steps,guidance_scale,dynamic_scale_factor)
-        #guidance_scale_list.append(guidance_scale_)
         
         if strength>0.0:
             # 4. Preprocess image
@@ -1019,13 +984,22 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             latents = self.prepare_latents(
                 batch_size * num_images_per_prompt,
                 num_channels_latents,
-                height,
-                width,
+                height+padding,
+                width+padding,
                 text_embeddings.dtype,
                 device,
                 generator,
                 latents,
             )
+            if alt_mode_variants > 0 and pan_stride == 0:
+                temp_canvas = torch.zeros(num_images_per_prompt*len(variant_list),4,height//8,width//8).cuda()
+                count=0
+                for i in range(len(variant_list)):
+                    h_start_vc,h_end_vc,w_start_vc,w_end_vc=variant_list[i]
+                    for j in range(num_images_per_prompt):
+                        temp_canvas[count, :, :, :] += latents[j, :, h_start_vc:h_end_vc, w_start_vc:w_end_vc]
+                        count+=1
+                latents=temp_canvas.to(torch.float16)
 
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -1055,6 +1029,16 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                 temp_views = get_views(height//8,width//8, pan_window_size//8, pan_stride//8)
                 for h_start, h_end, w_start, w_end in temp_views:
                     temp_canvas[:, :, h_start:h_end, w_start:w_end] += latents
+                latents=temp_canvas.to(torch.float16)
+            elif alt_mode=="variants" and alt_mode_variants > 0:
+                width = int(width * len(variant_list))
+                temp_canvas = torch.zeros(num_images_per_prompt,4,height//8,width//8).cuda()
+                temp_views = get_views(height//8,width//8, pan_window_size//8, pan_stride//8)
+                count=0
+                for h_start, h_end, w_start, w_end in temp_views:
+                    h_start_vc,h_end_vc,w_start_vc,w_end_vc=variant_list[count]
+                    temp_canvas[:, :, h_start:h_end, w_start:w_end] += latents[:, :, h_start_vc:h_end_vc, w_start_vc:w_end_vc]
+                    count+=1
                 latents=temp_canvas.to(torch.float16)
                 
             window_size=pan_window_size//8
@@ -1092,31 +1076,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                 latent_multiplier = 2
             elif alt_mode=="stack":
                 stack_text_embeddings = text_embeddings.chunk(latent_multiplier)
-                latent_multiplier = 2 
-            elif alt_mode=="multifade":
-                stack_text_embeddings = text_embeddings.chunk(latent_multiplier)
-                latent_multiplier = 2 
-                #workout region of overlap
-                overlap = (window_size-stride)
-                #create fade 
-                start = 1
-                stop = 0.1
-                step_size = (overlap)/(start+stop)
-
-                # create masks with gradients
-                left_latent_fade = np.arange(start=start, stop=stop, step=1/step_size)
-                left_latent_fade =left_latent_fade.reshape(-1,1)
-                up_alpha = np.repeat(left_latent_fade, repeats=window_size, axis=1)
-                #extent to size of window
-                pass_through = np.ones((stride+overlap,window_size))
-                top_mask = np.concatenate((up_alpha, pass_through), axis=0)
-                #rotate by 90
-                left_mask = np.rot90(top_mask)
-                left_top_mask = top_mask*left_mask
-                top_mask = torch.from_numpy(top_mask.copy()).cuda() 
-                left_mask = torch.from_numpy(left_mask.copy()).cuda() 
-                left_top_mask = torch.from_numpy(left_top_mask.copy()).cuda()
-                
+                latent_multiplier = 2                 
             elif alt_mode=="crossfade":
                 if isinstance(cross_fade,list):
                     prompt_blend_start = cross_fade[0]
@@ -1147,7 +1107,6 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                     #print(i)
                     slice_count = 0
                     for h_start, h_end, w_start, w_end in views:
-                        # TODO we can support batches, and pass multiple views at once to the unet
                         latent_view = latents[:, :, h_start:h_end, w_start:w_end]
                         
                         # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes.
@@ -1156,9 +1115,8 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                         # predict the noise residual
                         if alt_mode[:4]=="walk":
                             new_text_embeddings=torch.cat([walk_text_embeddings[0],walk_embeds_list[slice_count]])
-                        elif alt_mode=="stack" or alt_mode=="multifade":
+                        elif alt_mode=="stack":
                             new_text_embeddings=torch.cat([stack_text_embeddings[0],stack_text_embeddings[slice_count+2]])
-                            #print(alt_prompt_list[slice_count])
                         elif alt_mode=="crossfade":
                             new_text_embeddings=torch.cat([crossfade_text_embeddings[0],crossfade_text_embeddings[2],crossfade_text_embeddings[3]])
                         else:
@@ -1167,7 +1125,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                         noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=new_text_embeddings).sample
 
                         # perform guidance
-                        noise_pred_out = noise_pred.chunk(latent_multiplier)  # [b,4, 64, 64]
+                        noise_pred_out = noise_pred.chunk(latent_multiplier)
                         noise_pred_uncond, noise_pred_text = noise_pred_out[0], noise_pred_out[1]
                         if alt_prompt is not None and (alt_mode=="crossfade" or alt_mode=="stack"):
                             noise_pred_alt_text = noise_pred_out[latent_multiplier-1]
@@ -1179,14 +1137,6 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
 
                         # compute the denoising step with the reference model
                         latents_view_denoised = self.scheduler.step(noise_pred, t, latent_view).prev_sample
-                        if alt_mode=="multifade":
-                            if h_start==0 and w_start >0:
-                                latents_view_denoised=latents_view_denoised*left_mask
-                            elif h_start>0 and w_start ==0:
-                                latents_view_denoised=latents_view_denoised*top_mask
-                            elif h_start>0 and w_start >0:
-                                latents_view_denoised=latents_view_denoised*left_top_mask
-
                         value[:, :, h_start:h_end, w_start:w_end] += latents_view_denoised   
                         count[:, :, h_start:h_end, w_start:w_end] += 1
                         slice_count += 1
@@ -1206,7 +1156,6 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                     # expand the latents if we are doing classifier free guidance
                     latent_model_input = torch.cat([latents] * (latent_multiplier+ enabled_editing_prompts)) if do_classifier_free_guidance else latents
                     latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
-                    #print(latent_model_input.shape, t, text_embeddings.shape)
                     # predict the noise residual
                     noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
                     
@@ -1229,13 +1178,13 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                         ### Mirroring and Rotation ###
                         if alt_prompt is None:
                             None
-                        elif alt_mode == 'mirror up:down' and i > change_over_step:# and i % 3 == 0:
+                        elif alt_mode == 'mirror up:down' and i > alt_mode_warm_up:# and i % 3 == 0:
                             noise_guidance = torch.flipud(noise_guidance)#, [3])
-                        elif alt_mode == 'mirror left:right' and i > change_over_step:# and i % 3 == 0:
+                        elif alt_mode == 'mirror left:right' and i > alt_mode_warm_up:# and i % 3 == 0:
                             noise_guidance = torch.fliplr(noise_guidance)#, [2])
-                        elif alt_mode == 'rotate 90' and i > change_over_step:# and i % 3 == 0:
+                        elif alt_mode == 'rotate 90' and i > alt_mode_warm_up:# and i % 3 == 0:
                             noise_guidance = torch.rot90(noise_guidance, dims=[2, 3])
-                        elif alt_mode == 'rotate 180' and i > change_over_step:# and i % 3 == 0:
+                        elif alt_mode == 'rotate 180' and i > alt_mode_warm_up:# and i % 3 == 0:
                             noise_guidance = torch.rot90(torch.rot90(noise_guidance, dims=[2, 3]),dims=[2, 3])
                         ### End Mirroring and Rotation ###
 
@@ -1273,7 +1222,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                         ### Start Dynamic Scale ###                    
                         guidance_scale = guidance_scale_list[i]
                         noise_pred = noise_pred_uncond + guidance_scale * noise_guidance
-                        noise_pred_mimic = noise_pred_uncond + guidance_scale_mimic * noise_guidance
+                        noise_pred_mimic = noise_pred_uncond + dynamic_scale_mimic * noise_guidance
                         ### If we weren't doing mimic scale, we'd just return noise_pred here
 
                         ### Now recenter the values relative to their average rather than absolute, to allow scaling from average
@@ -1289,7 +1238,7 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                         orig_dtype = cfg_centered.dtype
                         if orig_dtype not in [torch.float, torch.double]:
                             cfg_centered = cfg_centered.float()
-                        cfg_max = torch.quantile(cfg_centered.abs(), threshold_percentile, dim=2).unsqueeze(2)
+                        cfg_max = torch.quantile(cfg_centered.abs(), dynamic_scale_threshold_percentile, dim=2).unsqueeze(2)
                         actualMax = torch.maximum(cfg_max, mim_max)
 
                         ### Clamp to the max
@@ -1499,6 +1448,8 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
             image_parts = []
             views = get_views(height//8, width//8, window_size=vae_image_window//8, stride=image_offset//8)
             for h_start, h_end, w_start, w_end in views:
+                if not post_process_recombine_image and (h_start % (vae_image_window//8) != 0 or  w_start % (vae_image_window//8) != 0):
+                    continue
                 latent_part = latents[:, :, h_start:h_end, w_start:w_end]
                 latent_part = 1 / 0.18215 * latent_part
                 image_part = self.vae.decode(latent_part).sample
@@ -1562,27 +1513,26 @@ class StableDiffusionMultiPipeline(DiffusionPipeline):
                     count+= 1
 
                 recombined_image = canvas*canvas_mask+c_seams*c_seams_mask+h_seams*h_seams_mask+ w_seams*w_seams_mask
-                image = (recombined_image / 2 + 0.5).clamp(0, 1)
-                # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
-                image = image.cpu().permute(0, 2, 3, 1).float().numpy()
             else:
-                image = []
-                for images in image_parts:
-                    image.append((images / 2 + 0.5).clamp(0, 1))
-                image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+                recombined_image = torch.zeros(num_images_per_prompt*len(image_parts),3,vae_image_window,vae_image_window).cuda()
+                count=0
+                for i in range(len(image_parts)):
+                    for j in range(num_images_per_prompt):
+                        recombined_image[count,:,:,:]=image_parts[count]
+                        count+=1
+            image = (recombined_image / 2 + 0.5).clamp(0, 1)
+            # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
+            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
         ### End VAE Chop and Reassemble ###
         
         else:
             image = self.decode_latents(latents)
 
-        # 9. Run safety checker
-        image, has_nsfw_concept = self.run_safety_checker(image, device, text_embeddings.dtype)
-
-        # 10. Convert to PIL
+        # 9. Convert to PIL
         if output_type == "pil":
             image = self.numpy_to_pil(image)
 
         if not return_dict:
-            return (image, has_nsfw_concept)
+            return (image,)
 
-        return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
+        return ImagePipelineOutput(images=image)
