@@ -1,6 +1,6 @@
 ## Stable Difusion Lite
 
-text2image, image2image, latent walk, panoramas, multi-prompt images and more all in a single pipe!  
+text2image, image2image, latent walk, image variants, panoramas, multi-prompt images and more all in a single pipe!  
 
 The guiding principal of this project is to be able to run Stable Diffusion with minimalism. This means:
 
@@ -31,3 +31,11 @@ The Explore (text to image) and Sketch (image to image) modules makes use of Saf
 
 The Morph (latent walk) module makes use of stable-diffusion-videos, with the audio/video code removed to just return a series of images.  
 [https://github.com/nateraw/stable-diffusion-videos](https://github.com/nateraw/stable-diffusion-videos)
+
+The Pan module makes use of the panorama code from:
+@article{bar2023multidiffusion,
+  title={MultiDiffusion: Fusing Diffusion Paths for Controlled Image Generation},
+  author={Bar-Tal, Omer and Yariv, Lior and Lipman, Yaron and Dekel, Tali},
+  journal={arXiv preprint arXiv:2302.08113},
+  year={2023}
+}
